@@ -135,6 +135,18 @@ def _copy_meta(
 
 
 def convert(source: Path, destination: Path, *, copy_videos: bool, overwrite: bool) -> None:
+    source_resolved = source.resolve()
+    destination_resolved = destination.resolve()
+    paths_overlap = (
+        source_resolved == destination_resolved
+        or source_resolved in destination_resolved.parents
+        or destination_resolved in source_resolved.parents
+    )
+    if paths_overlap:
+        raise ValueError(
+            "source and destination must be separate, non-overlapping directories: "
+            f"source={source_resolved}, destination={destination_resolved}"
+        )
     if not source.is_dir() or not (source / "meta" / "info.json").is_file():
         raise FileNotFoundError(f"source is not a valid bucket: {source}")
     if destination.exists() and any(destination.iterdir()):
@@ -226,11 +238,13 @@ def convert(source: Path, destination: Path, *, copy_videos: bool, overwrite: bo
         "action": _stats(np.concatenate(action_rows, axis=0), pin_rot6d=False),
         "observation.state": _stats(np.concatenate(state_rows, axis=0), pin_rot6d=False),
     }
-    source_stats = json.loads((source / "meta" / "stats.json").read_text())
-    if "timestamp" in source_stats:
-        descriptive_stats["timestamp"] = {
-            key: np.asarray(value, dtype=np.float32) for key, value in source_stats["timestamp"].items()
-        }
+    source_stats_path = source / "meta" / "stats.json"
+    if source_stats_path.is_file():
+        source_stats = json.loads(source_stats_path.read_text())
+        if "timestamp" in source_stats:
+            descriptive_stats["timestamp"] = {
+                key: np.asarray(value, dtype=np.float32) for key, value in source_stats["timestamp"].items()
+            }
     normalization_stats = {
         "eef": _stats(np.concatenate(action_rows + state_rows, axis=0), pin_rot6d=True)
     }

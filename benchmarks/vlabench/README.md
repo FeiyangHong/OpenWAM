@@ -19,7 +19,7 @@ pip install \
   'numpy==1.25.0' 'scipy==1.14.0' 'mujoco==3.2.2' 'dm_control==1.0.22' \
   'opencv-python<4.12' 'gym==0.26.2' 'gymnasium==0.29.1' \
   'mediapy==1.2.0' 'h5py==3.11.0' 'imageio>=2.34' \
-  'Pillow>=10' 'PyYAML>=6' 'websockets>=16,<17' 'open3d==0.18.0' \
+  'Pillow>=10' 'PyYAML>=6' 'websockets>=15,<17' 'open3d==0.18.0' \
   colorlog colorama openai 'rtree==1.2.0' networkx gdown
 pip install -e src/rrt-algorithms --no-deps --no-build-isolation
 pip install -e . --no-deps
