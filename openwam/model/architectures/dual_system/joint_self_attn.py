@@ -166,6 +166,10 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
             return
         logger.info("Enabled dual self-attn MoT compile with torch.compile kwargs=%s", kwargs)
 
+    def prepare_joint_states(self, vstate, astate, pipeline_inputs):
+        """Attach invocation-local metadata before the checkpointed layer loop."""
+        return vstate, astate
+
     def forward(
         self,
         noisy_actions: Optional[Tensor],
@@ -225,6 +229,7 @@ class DualSystemSelfAttnArchitecture(BaseWAMArchitecture):
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         )
+        vstate, astate = self.prepare_joint_states(vstate, astate, pipeline_inputs)
         compiled_loop = getattr(self, "_compiled_mot_run_joint_loop", None)
         if compiled_loop is not None and not use_gradient_checkpointing and not use_gradient_checkpointing_offload:
             try:

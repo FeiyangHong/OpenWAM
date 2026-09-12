@@ -1,0 +1,18 @@
+defaults:
+  - dual_system
+  - _self_
+
+architecture:
+  framework: statewam
+  variant: interaction
+  allow_experimental: true
+  interaction_state:
+    mode: residual
+    source: future_action
+    num_tokens: 16
+    dim: 512
+    num_heads: 8
+    state_bridge_layers: [4, 9, 14, 19, 24, 29]
+    gate_init: 0.0
+    cache_across_denoise_steps: false
+    semantic_loss_weight: 0.0

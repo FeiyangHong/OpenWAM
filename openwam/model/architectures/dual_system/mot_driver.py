@@ -245,9 +245,14 @@ class DualSystemMoTDriver:
             mixed = self._mixed_attention(q_cat, k_cat, v_cat, attn_mask)
 
         attn_v, attn_a = mixed.split([s_video, s_action], dim=1)
+        attn_a = self.augment_action_attention(layer_id, vstate, astate, attn_a)
         vstate = vb.post_attn_at_layer(layer_id, vstate, attn_v.contiguous(), vpost)
         astate = ab.post_attn_at_layer(layer_id, astate, attn_a.contiguous(), apost)
         return vstate, astate
+
+    def augment_action_attention(self, layer_id, vstate, astate, attn_a):
+        """Optional architecture extension before the original block suffix."""
+        return attn_a
 
     def _step_checkpointed(
         self,

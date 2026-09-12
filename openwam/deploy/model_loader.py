@@ -194,7 +194,10 @@ def load_from_checkpoint_dir(
             vlm_cfg["checkpoint_path"] = vlm_dir
             logger.info("Using self-contained VLM checkpoint from %s", vlm_dir)
 
-    architecture = build_architecture(resolved_arch.registry_name, params)
+    architecture = build_architecture(
+        resolved_arch.registry_name, params,
+        **({"allow_experimental": True} if params.get("allow_experimental", False) else {}),
+    )
     logger.info(
         "Architecture: %s (framework=%s variant=%s)",
         resolved_arch.registry_name,

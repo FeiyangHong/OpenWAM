@@ -277,7 +277,10 @@ def build_architecture_from_ckpt_dir(ckpt_dir: str, *, weights_required: bool, o
     vb_params["_materialize_weights"] = not weights_required
 
     logger.info("[%s] building architecture from self-contained ckpt dir: %s", tag, ckpt_dir)
-    architecture = build_architecture(resolved_arch.registry_name, params)
+    architecture = build_architecture(
+        resolved_arch.registry_name, params,
+        **({"allow_experimental": True} if params.get("allow_experimental", False) else {}),
+    )
 
     if weights_required:
         weights = explicit_weights or find_latest_weights(ckpt_dir)

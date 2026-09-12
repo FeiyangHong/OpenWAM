@@ -130,7 +130,10 @@ class OpenWAMTrainer:
                 propagate_component_specs(ckpt_cfg, cfg)
         else:
             resolved_arch = resolve_architecture_config(m)
-            self.architecture = build_architecture(resolved_arch.registry_name, resolved_arch.params)
+            self.architecture = build_architecture(
+                resolved_arch.registry_name, resolved_arch.params,
+                **({"allow_experimental": True} if resolved_arch.params.get("allow_experimental", False) else {}),
+            )
         logger.info(
             "Architecture: %s (framework=%s variant=%s)",
             resolved_arch.registry_name,

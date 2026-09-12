@@ -1,6 +1,7 @@
 /data/*
 !/data/robotwin/
 /models
+/statewam_artifacts/
 /diffusers
 .claude/
 .vscode/
