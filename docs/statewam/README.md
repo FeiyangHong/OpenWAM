@@ -14,11 +14,14 @@ docs/statewam/
 │   ├── 03_OpenWAM_Implementation_Map.md
 │   └── 04_Simulation_Protocol.md
 └── stages/
-    └── r1/
-        └── robotwin-smoke/          # 一个独立 Goal 的完整文档包
-            ├── GOAL.md             # 范围、约束、验收与状态
-            ├── REPORT.md           # 已验收的执行证据与结论边界
-            └── USAGE.md            # 简洁运行命令
+    ├── r1/
+    │   └── robotwin-smoke/          # 已完成 Goal 的完整文档包
+    │       ├── GOAL.md
+    │       ├── REPORT.md
+    │       └── USAGE.md
+    └── r2/
+        └── robotwin-pilot/          # 新 Goal，执行文档尚未形成
+            └── GOAL.md
 ```
 
 ## 当前工作
@@ -26,10 +29,11 @@ docs/statewam/
 | 阶段 / Goal | 状态 | 入口与交付 |
 |---|---|---|
 | R1 / robotwin-smoke | 工程验收完成：200 步 profiling、恢复到 201、基线/StateWAM 双条件 smoke | [GOAL](stages/r1/robotwin-smoke/GOAL.md)、[REPORT](stages/r1/robotwin-smoke/REPORT.md)、[USAGE](stages/r1/robotwin-smoke/USAGE.md) |
+| R2 / robotwin-pilot | 计划已编写，未授权执行；正式矩阵需先确认预算 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)；REPORT、USAGE 随执行交付 |
 
-当前 Goal：StateWAM R1 工程实现、4 卡 200–500 optimizer updates profiling，以及 RoboTwin Clean2Random 基线/StateWAM 双条件 smoke。完整训练和全量评测暂缓。
+已完成 R1 工程验收，固化提交为 `98089d1fa612b7d1f0349ae68b3b8b0ef690aef7`。下一候选 Goal 是 R2 的 from-Foundation E0–E3 公平结构比较 pilot；目前只形成计划，没有启动 R2。完整 benchmark 和后续研究阶段不随文档更新自动执行。
 
-项目分支：`feat/statewam-r1-robotwin`。
+当前提交分支：`feat/statewam-r1-robotwin`。R2 实现启动时再建立其独立分支，见对应 Goal。
 
 ## 研究设计入口
 
@@ -50,7 +54,7 @@ docs/statewam/
 7. 研究设计表达长期路线，当前执行以用户最新约束与对应 Goal 为准。局部执行范围缩减只记在 Goal 中；跨阶段假设或协议变更才更新设计文件并注明理由。
 8. RoboTwin 的日志、checkpoint、视频、profile 和逐 episode 结果存放于 `statewam_artifacts/robotwin/`。报告记录 goal id、run id、相对路径、配置/代码版本和必要校验值，区分运行产物与文档。
 9. 文档不保存凭据。示例命令通过环境变量引用认证信息。
-10. Goal 的唯一标识使用 `<stage>/<goal-id>`，当前为 `r1/robotwin-smoke`。报告、usage 和运行 manifest 均记录该标识；同一 Goal 的重复运行使用不同 run id，不新建散落在顶层的报告。
+10. Goal 的唯一标识使用 `<stage>/<goal-id>`，例如 `r1/robotwin-smoke`、`r2/robotwin-pilot`。报告、usage 和运行 manifest 均记录对应标识；同一 Goal 的重复运行使用不同 run id，不新建散落在顶层的报告。
 11. 一个 Goal 的报告按运行记录追加，保留失败和重跑证据，不覆盖历史结论。跨 Goal 只通过相对链接引用前置成果，不复制整份报告或将新目标追加到旧 Goal 中。
 12. 编写或修订 Goal 不等于启动执行；本次文档整理不启动新的训练、profiling 或测评。执行状态与通过结论必须由实际证据单独更新。
 13. `GOAL.md` 是范围与验收条件的来源，`REPORT.md` 是执行状态与证据的来源，`USAGE.md` 是运行命令的来源。总索引仅汇总状态并链接原文，不复制详细进度；设计文档的历史状态不作为当前验收结论。
@@ -63,3 +67,5 @@ docs/statewam/
 2026-09-12：补充 Goal 唯一标识、重复运行和跨 Goal 引用规则；保留工作区已有实现与执行记录，本次仅调整文档管理约定。
 
 2026-09-12：用户明确下达 Goal 后，完成 `r1/robotwin-smoke` 的工程验收并交付报告和 usage；完整训练、全量评测及后续研究阶段仍未执行。
+
+2026-09-12：按用户要求独立提交 R1；另建 `stages/r2/robotwin-pilot/GOAL.md`，补齐初始化、容量、数据/统计隔离、训练预算、配对指令/初态/RNG、统一推理配置及失败计数约束。本次只固化与规划，不启动 R2 实验。
