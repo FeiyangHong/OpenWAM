@@ -21,13 +21,20 @@ class StateWAMMoTDriver(DualSystemMoTDriver):
         video = vstate.hidden_states
         valid = metadata["video_valid"]
         positions = metadata["positions"]
-        if expert.source == "current":
-            n = self._video_tokens_per_frame(vstate)
-            video, valid, positions = video[:, :n], valid[:, :n], positions[:n]
+        n = self._video_tokens_per_frame(vstate)
         actions = astate.payload.x_action if expert.source == "future_action" else None
-        delta = expert.layers[str(layer_id)](
+        action_valid = metadata["action_valid"]
+        layer = expert.layers[str(layer_id)]
+        if expert.capacity_control == "current_resample":
+            actions, action_valid = expert.current_capacity_source(
+                video[:, :n], valid[:, :n], tokens=astate.payload.x_action.shape[1],
+                dim=layer.action_proj.in_features,
+            )
+        if expert.source == "current":
+            video, valid, positions = video[:, :n], valid[:, :n], positions[:n]
+        delta = layer(
             video, vstate.context, actions, astate.payload.x_action,
             positions=positions, noise=metadata["noise"], video_valid=valid,
-            context_valid=vstate.context_mask, action_valid=metadata["action_valid"],
+            context_valid=vstate.context_mask, action_valid=action_valid,
         )
         return attn_a + delta

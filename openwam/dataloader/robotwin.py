@@ -297,11 +297,14 @@ class RoboTwinDataset(BaseDataset):
         # (default). Truthy → enabled; a dict overrides
         # the per-channel strengths {brightness, contrast, saturation, hue}.
         color_jitter: Optional[Any] = None,
+        episode_allowlist: Optional[list[str]] = None,
+        strict_data: bool = False,
     ):
         super().__init__()
         self.embodiment = embodiment
         self.variant = variant
         self.action_mode = action_mode
+        self.strict_data = strict_data
         self._unify_action = bool(unify_action)
         self._unify_action_map = unify_action_map
         if unify_state_map is not None and list(unify_state_map) != list(self._unify_action_map or ()):
@@ -380,6 +383,17 @@ class RoboTwinDataset(BaseDataset):
         # ---- Discover and sort target episode files ----
         pattern = os.path.join(data_root, "episode*.hdf5")
         all_files = sorted(glob.glob(pattern))
+        if episode_allowlist is not None:
+            if not episode_allowlist or len(set(episode_allowlist)) != len(episode_allowlist):
+                raise ValueError("Episode allowlist must be nonempty and unique")
+            if any(os.path.basename(name) != name or not name.startswith("episode") or not name.endswith(".hdf5")
+                   for name in episode_allowlist):
+                raise ValueError("Episode allowlist must contain episode basenames only")
+            available = {os.path.basename(path): path for path in all_files}
+            missing = set(episode_allowlist) - set(available)
+            if missing:
+                raise FileNotFoundError(f"Missing allowlisted episodes: {sorted(missing)}")
+            all_files = sorted(available[name] for name in episode_allowlist)
         if not all_files:
             raise FileNotFoundError(f"No episode*.hdf5 files found in {data_root}")
 
@@ -393,6 +407,10 @@ class RoboTwinDataset(BaseDataset):
         for path in self._episode_files:
             with h5py.File(path, "r") as f:
                 T = f[f"observation/{target_camera}/rgb"].shape[0]
+                if strict_data:
+                    for camera in self.cameras:
+                        if f[f"observation/{camera}/rgb"].shape[0] != T:
+                            raise ValueError(f"Camera length mismatch: {path}:{camera}")
                 self._episode_lengths.append(T)
 
                 if self._action_dim_detected is None:
@@ -514,6 +532,8 @@ class RoboTwinDataset(BaseDataset):
         self.normalization_stats_path: Optional[str] = None  # resolved path to the stats .npy file
 
         if self.normalize_mode is not None:
+            if strict_data and (not normalization_stats_path or not os.path.isfile(normalization_stats_path)):
+                raise FileNotFoundError("Strict data loading requires an existing normalization_stats_path")
             if self.normalize_mode not in YAML_TO_NORM_MODE:
                 raise ValueError(
                     f"normalize_mode must be one of {list(YAML_TO_NORM_MODE)} or null, got '{self.normalize_mode}'"
@@ -549,6 +569,8 @@ class RoboTwinDataset(BaseDataset):
             if stats_path is not None:
                 mode_stats = load_mode_stats(stats_path, self.action_mode)
                 if mode_stats is None:
+                    if strict_data:
+                        raise ValueError(f"Missing {self.action_mode} normalization statistics")
                     print(
                         f"  [normalizer] WARNING: stats file {stats_path} has no '{self.action_mode}' entry; "
                         f"normalization DISABLED."
@@ -587,9 +609,16 @@ class RoboTwinDataset(BaseDataset):
                         with open(os.path.join(instr_dir, fname), "r") as jf:
                             self._instructions[fname] = json.load(jf)
                     except Exception:
+                        if strict_data:
+                            raise
                         pass
             if self._instructions:
                 print(f"  Loaded {len(self._instructions)} instruction files")
+        if strict_data:
+            for path in self._episode_files:
+                name = os.path.basename(path).replace(".hdf5", ".json")
+                if name not in self._instructions or not self._instructions[name].get("seen"):
+                    raise ValueError(f"Missing seen instructions for {path}")
 
     @property
     def action_dim(self) -> int:
@@ -676,6 +705,8 @@ class RoboTwinDataset(BaseDataset):
             try:
                 per_camera[cam] = self._read_camera_frames(f, cam, start, end)
             except KeyError:
+                if self.strict_data:
+                    raise
                 ph, pw = self._obs_image_size or (self.height, self.width)
                 per_camera[cam] = [Image.new("RGB", (pw, ph), (0, 0, 0)) for _ in range(n)]
 
@@ -831,7 +862,8 @@ class RoboTwinDataset(BaseDataset):
 
         prompt = self._get_prompt(ep_idx)
 
-        ep_key = f"episode_{ep_idx}"
+        ep_number = int(os.path.basename(path).removeprefix("episode").removesuffix(".hdf5"))
+        ep_key = f"episode_{ep_number}"
         ep_scene = self._scene_info.get(ep_key, {})
         ep_info = ep_scene.get("info", ep_scene)
         active_arm = ep_info.get("active_arm", "both")
@@ -938,6 +970,7 @@ class MultiTaskRoboTwinDataset(BaseDataset):
             unify_action_map=_get("unify_action_map", None),
             unify_state_map=_get("unify_state_map", None),
             color_jitter=_get("color_jitter", None),
+            episode_manifest=_get("episode_manifest", None),
         )
 
     def __init__(
@@ -948,10 +981,23 @@ class MultiTaskRoboTwinDataset(BaseDataset):
         tasks: Optional[list] = None,
         normalization_stats_path: Optional[str] = None,
         action_mode: str = "joint",
+        episode_manifest: Optional[str] = None,
         **kwargs,
     ):
         super().__init__()
         self.action_mode = action_mode
+        selections = None
+        if episode_manifest is not None:
+            from openwam.dataloader.utils.episode_manifest import load_episode_selection
+
+            selections = load_episode_selection(
+                episode_manifest, dataset_dir, embodiment, variant, kwargs.get("split", "train"),
+                normalization_stats_path,
+            )
+            if tasks is not None and set(tasks) != set(selections):
+                raise ValueError("Task selection must match the episode manifest")
+            tasks = sorted(selections)
+            kwargs["strict_data"] = True
 
         # ---- Resolve variant(s) ----
         if variant == "both":
@@ -1133,6 +1179,7 @@ class MultiTaskRoboTwinDataset(BaseDataset):
                     embodiment=embodiment,
                     variant=v,
                     action_mode=action_mode,
+                    episode_allowlist=selections[display_name] if selections is not None else None,
                     **kwargs,
                 )
             self._sub_datasets.append(ds)

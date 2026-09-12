@@ -20,8 +20,10 @@ docs/statewam/
     │       ├── REPORT.md
     │       └── USAGE.md
     └── r2/
-        └── robotwin-pilot/          # 新 Goal，执行文档尚未形成
-            └── GOAL.md
+        └── robotwin-pilot/          # 执行中，报告仅记录已有证据
+            ├── GOAL.md
+            ├── REPORT.md
+            └── USAGE.md
 ```
 
 ## 当前工作
@@ -29,11 +31,11 @@ docs/statewam/
 | 阶段 / Goal | 状态 | 入口与交付 |
 |---|---|---|
 | R1 / robotwin-smoke | 工程验收完成：200 步 profiling、恢复到 201、基线/StateWAM 双条件 smoke | [GOAL](stages/r1/robotwin-smoke/GOAL.md)、[REPORT](stages/r1/robotwin-smoke/REPORT.md)、[USAGE](stages/r1/robotwin-smoke/USAGE.md) |
-| R2 / robotwin-pilot | 计划已修订，待下达 Goal；下达后最多 4 卡连续完成准备、训练、评测和性能记账，无需二次预算确认 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)；REPORT、USAGE 随执行交付 |
+| R2 / robotwin-pilot | 执行中：P0 通过、P1 进行中；最多 4 卡连续推进，无需二次预算确认 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)、[REPORT](stages/r2/robotwin-pilot/REPORT.md)、[USAGE](stages/r2/robotwin-pilot/USAGE.md) |
 
-已完成 R1 工程验收，固化提交为 `98089d1fa612b7d1f0349ae68b3b8b0ef690aef7`。下一候选 Goal 是 R2 的 from-Foundation E0–E3 公平结构比较 pilot；目前只形成计划，没有启动 R2。完整 benchmark 和后续研究阶段不随文档更新自动执行。
+已完成 R1 工程验收，固化提交为 `98089d1fa612b7d1f0349ae68b3b8b0ef690aef7`。当前执行 R2 的 from-Foundation E0–E3 公平结构比较 pilot；完整 benchmark 和后续研究阶段不自动执行。
 
-当前提交分支：`feat/statewam-r1-robotwin`。R2 实现启动时再建立其独立分支，见对应 Goal。
+当前执行分支：`feat/statewam-r2-robotwin-pilot`，基于计划提交 `368654c`，保留 R1 分支和固化版本。
 
 ## 研究设计入口
 
@@ -73,3 +75,5 @@ docs/statewam/
 2026-09-12：按用户要求取消 R2 的二次预算确认门槛。正式下达 Goal 后，在项目同时最多 4 卡的约束下自主调优、冻结公平训练预算并连续执行到交付；增加显存/利用率、吞吐/延迟、GPU-hours、失败重跑及存储等原始记录与汇总。本次仅修订文档，尚未启动 R2。
 
 2026-09-12：在 R2 Goal 中补充独立任务与持久监控、对话中断边界、检查点与逐 episode 恢复、显式停止及资源释放要求，纳入 P2 验收和后续 USAGE。所有要求仍为待实现计划，本次未启动 R2。
+
+2026-09-12：用户正式下达 R2 Goal。固化计划并建立 R2 分支，开始数据审计和公平性工具；在 R2 独立目录建立执行报告与准备阶段 usage，尚未开始正式训练或评测。

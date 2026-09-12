@@ -83,6 +83,11 @@ class InteractionStateExpert(nn.Module):
         self.source = str(cfg.get("source", "future_action"))
         if self.source not in self.SOURCES:
             raise ValueError(f"Unknown State source: {self.source}")
+        self.capacity_control = str(cfg.get("capacity_control", "none"))
+        if self.capacity_control not in ("none", "current_resample"):
+            raise ValueError(f"Unknown State capacity control: {self.capacity_control}")
+        if self.capacity_control == "current_resample" and self.source not in ("current", "future"):
+            raise ValueError("current_resample is a current-only control for current/future readers")
         if cfg.get("mode", "residual") != "residual":
             raise ValueError("R1 supports residual State only")
         if cfg.get("cache_across_denoise_steps", False) or cfg.get("semantic_loss_weight", 0):
@@ -102,6 +107,15 @@ class InteractionStateExpert(nn.Module):
                 int(cfg.get("num_tokens", 16)), int(cfg.get("num_heads", 8)),
             ) for i in layers
         })
+
+    @staticmethod
+    def current_capacity_source(video, valid, *, tokens, dim):
+        """Parameter-free, masked pooling into the action reader's input geometry."""
+        video = video.masked_fill(~valid[..., None], 0)
+        pooled = F.adaptive_avg_pool2d(video.unsqueeze(1), (tokens, dim)).squeeze(1)
+        weights = F.adaptive_avg_pool1d(valid.to(video.dtype).unsqueeze(1), tokens).transpose(1, 2)
+        pooled = pooled / weights.clamp_min(torch.finfo(video.dtype).tiny)
+        return pooled, weights.squeeze(-1) > 0
 
     @staticmethod
     def positions(frames, height, width, *, device, dtype):
