@@ -39,6 +39,6 @@ train:
 
   # wandb (rank-0); project: null disables logging.
   wandb:
-    project: openwam-svae
+    project: openwam
     run_name: null
-    entity: null
+    entity: -harbin-institute-of-technology
