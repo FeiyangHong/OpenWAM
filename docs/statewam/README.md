@@ -29,7 +29,7 @@ docs/statewam/
 | 阶段 / Goal | 状态 | 入口与交付 |
 |---|---|---|
 | R1 / robotwin-smoke | 工程验收完成：200 步 profiling、恢复到 201、基线/StateWAM 双条件 smoke | [GOAL](stages/r1/robotwin-smoke/GOAL.md)、[REPORT](stages/r1/robotwin-smoke/REPORT.md)、[USAGE](stages/r1/robotwin-smoke/USAGE.md) |
-| R2 / robotwin-pilot | 计划已编写，未授权执行；正式矩阵需先确认预算 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)；REPORT、USAGE 随执行交付 |
+| R2 / robotwin-pilot | 计划已修订，待下达 Goal；下达后最多 4 卡连续完成准备、训练、评测和性能记账，无需二次预算确认 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)；REPORT、USAGE 随执行交付 |
 
 已完成 R1 工程验收，固化提交为 `98089d1fa612b7d1f0349ae68b3b8b0ef690aef7`。下一候选 Goal 是 R2 的 from-Foundation E0–E3 公平结构比较 pilot；目前只形成计划，没有启动 R2。完整 benchmark 和后续研究阶段不随文档更新自动执行。
 
@@ -69,3 +69,7 @@ docs/statewam/
 2026-09-12：用户明确下达 Goal 后，完成 `r1/robotwin-smoke` 的工程验收并交付报告和 usage；完整训练、全量评测及后续研究阶段仍未执行。
 
 2026-09-12：按用户要求独立提交 R1；另建 `stages/r2/robotwin-pilot/GOAL.md`，补齐初始化、容量、数据/统计隔离、训练预算、配对指令/初态/RNG、统一推理配置及失败计数约束。本次只固化与规划，不启动 R2 实验。
+
+2026-09-12：按用户要求取消 R2 的二次预算确认门槛。正式下达 Goal 后，在项目同时最多 4 卡的约束下自主调优、冻结公平训练预算并连续执行到交付；增加显存/利用率、吞吐/延迟、GPU-hours、失败重跑及存储等原始记录与汇总。本次仅修订文档，尚未启动 R2。
+
+2026-09-12：在 R2 Goal 中补充独立任务与持久监控、对话中断边界、检查点与逐 episode 恢复、显式停止及资源释放要求，纳入 P2 验收和后续 USAGE。所有要求仍为待实现计划，本次未启动 R2。
