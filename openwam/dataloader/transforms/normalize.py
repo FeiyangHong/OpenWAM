@@ -153,6 +153,18 @@ class Normalizer(InvertibleModalityTransform):
 
         return ((x - self._normalize_offset) * self._normalize_scale).astype(np.float32)
 
+    def normalize_action(self, x: np.ndarray) -> np.ndarray:
+        """Map committed physical actions back to model space for TrainingRTC.
+
+        Uses ACTION statistics (normalize() may use proprio statistics). Do not
+        clip: an already committed generated command must round-trip even when
+        it falls outside the training quantiles.
+        """
+        x = np.asarray(x)
+        if self._scale is None or self.mode == NormMode.BINARY:
+            return x.copy()
+        return ((x - self._offset) * self._scale).astype(np.float32)
+
     def unnormalize(self, x: np.ndarray) -> np.ndarray:
         """Reverse normalization."""
         if self.mode == NormMode.BINARY:

@@ -24,6 +24,11 @@ Protocol (unified — same shape for single-view and multi-view checkpoints):
         "state":  [floats]                             # optional proprio
     }
 
+Real-robot clients may use the binary MsgPack variant and send compressed
+camera bytes directly. ``obs_chunk`` preprocesses one observation and returns
+several consecutive actions, avoiding repeated image transfer and decode while
+the policy is consuming an already-generated action buffer.
+
 Server-side behavior:
 - ``multiview=False``: ignores wrist fields, crop+resize ``head_camera``.
 - ``multiview=True``:  black-fills missing/None wrists, then composes the
@@ -46,6 +51,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -58,10 +64,12 @@ logger = logging.getLogger(__name__)
 # these string values are a frozen wire contract and must never change.
 # Client -> server
 OBS = "obs"
+OBS_CHUNK = "obs_chunk"
 RESET = "reset"
 PING = "ping"
 # Server -> client
 ACTION = "action"
+ACTION_CHUNK = "action_chunk"
 RESET_ACK = "reset_ack"
 PONG = "pong"
 ERROR = "error"
@@ -73,6 +81,30 @@ ERR_INTERNAL = "internal_error"
 # Cap for a single obs message. A multi-camera base64 frame can exceed the
 # 1 MB websockets default, so lift it for the obs stream.
 MAX_MESSAGE_BYTES = 32 * 1024 * 1024
+MAX_ACTION_CHUNK = 64
+
+
+def _decode_wire_message(message):
+    """Decode JSON text or the low-overhead MsgPack binary wire format."""
+    if isinstance(message, bytes):
+        import msgpack
+
+        data = msgpack.unpackb(message, raw=False)
+        if not isinstance(data, dict):
+            raise ValueError("MsgPack message must decode to a mapping")
+        return data, True
+    data = json.loads(message)
+    if not isinstance(data, dict):
+        raise ValueError("JSON message must decode to an object")
+    return data, False
+
+
+def _encode_wire_message(data: dict, binary: bool):
+    if binary:
+        import msgpack
+
+        return msgpack.packb(data, use_bin_type=True)
+    return json.dumps(data)
 
 
 def _infer_video_num_frames(dl) -> int:
@@ -135,6 +167,7 @@ class PolicyServer:
         self._policy = None
         self._request_count = 0
         self._total_latency = 0.0
+        self._session_episodes: dict[str, int] = {}
 
     def _init_policy(self):
         """Initialize the receding-horizon policy."""
@@ -177,7 +210,7 @@ class PolicyServer:
         contract = getattr(getattr(self.engine, "architecture", None), "repr_contract", None)
         return dict(contract) if contract else {}
 
-    def predict(self, obs: dict) -> dict:
+    def predict(self, obs: dict, *, session_id: str = "direct") -> dict:
         """Synchronous prediction for a single observation.
 
         Args:
@@ -195,6 +228,9 @@ class PolicyServer:
         self._init_policy()
         t0 = time.monotonic()
 
+        obs = dict(obs)
+        obs["_video_save_session_id"] = session_id
+        obs["_video_save_episode_id"] = self._session_episodes.get(session_id, 0)
         obs = self._obs_preprocessor.preprocess(obs)
         action = self._policy.predict_action(obs)
 
@@ -208,12 +244,40 @@ class PolicyServer:
             "latency_ms": round(latency_ms, 2),
         }
 
-    def reset(self):
+    def predict_chunk(self, obs: dict, count: int, *, session_id: str = "direct") -> dict:
+        """Return consecutive actions after preprocessing one observation once."""
+        self._init_policy()
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ObsValidationError("count must be an integer")
+        if not 1 <= count <= MAX_ACTION_CHUNK:
+            raise ObsValidationError(f"count must be in [1, {MAX_ACTION_CHUNK}]")
+
+        t0 = time.monotonic()
+        obs = dict(obs)
+        obs["_video_save_session_id"] = session_id
+        obs["_video_save_episode_id"] = self._session_episodes.get(session_id, 0)
+        obs = self._obs_preprocessor.preprocess(obs)
+        actions = [self._policy.predict_action(obs).tolist() for _ in range(count)]
+        latency_ms = (time.monotonic() - t0) * 1000
+        self._request_count += count
+        self._total_latency += latency_ms
+        return {
+            "actions": actions,
+            "count": len(actions),
+            "step": self._request_count,
+            "latency_ms": round(latency_ms, 2),
+        }
+
+    def reset(self, session_id: str = "direct"):
         """Reset policy state."""
         if self._policy is not None:
             self._policy.reset()
         self._request_count = 0
         self._total_latency = 0.0
+        self._session_episodes[session_id] = self._session_episodes.get(session_id, 0) + 1
+        reset_video_saving = getattr(self.engine, "reset_video_saving", None)
+        if reset_video_saving is not None:
+            reset_video_saving(session_id)
 
     def shutdown(self):
         """Clean up async resources."""
@@ -236,30 +300,40 @@ class PolicyServer:
 
         async def ws_handler(websocket):
             """Handle WebSocket connections."""
+            session_id = "session_" + uuid.uuid4().hex[:12]
+            self._session_episodes.setdefault(session_id, 0)
             logger.info("Client connected: %s", websocket.remote_address)
             try:
                 async for message in websocket:
+                    binary = isinstance(message, bytes)
                     try:
-                        data = json.loads(message)
+                        data, binary = _decode_wire_message(message)
                         msg_type = data.get("type", OBS)
 
                         if msg_type == RESET:
-                            self.reset()
-                            await websocket.send(json.dumps({"type": RESET_ACK}))
+                            self.reset(session_id)
+                            await websocket.send(_encode_wire_message({"type": RESET_ACK}, binary))
                         elif msg_type == OBS:
-                            result = self.predict(data)
+                            result = self.predict(data, session_id=session_id)
                             result["type"] = ACTION
-                            await websocket.send(json.dumps(result))
+                            await websocket.send(_encode_wire_message(result, binary))
+                        elif msg_type == OBS_CHUNK:
+                            result = self.predict_chunk(data, data.get("count", 1), session_id=session_id)
+                            result["type"] = ACTION_CHUNK
+                            await websocket.send(_encode_wire_message(result, binary))
                         elif msg_type == PING:
-                            await websocket.send(json.dumps({"type": PONG, **self._ckpt_contract()}))
+                            await websocket.send(
+                                _encode_wire_message({"type": PONG, **self._ckpt_contract()}, binary)
+                            )
                         else:
                             await websocket.send(
-                                json.dumps(
+                                _encode_wire_message(
                                     {
                                         "type": ERROR,
                                         "code": ERR_UNKNOWN_TYPE,
                                         "message": f"Unknown message type: {msg_type}",
-                                    }
+                                    },
+                                    binary,
                                 )
                             )
                     except ObsValidationError as e:
@@ -267,23 +341,25 @@ class PolicyServer:
                         # Logged at INFO so it doesn't look like a server crash.
                         logger.info("[obs] validation failed: %s", e)
                         await websocket.send(
-                            json.dumps(
+                            _encode_wire_message(
                                 {
                                     "type": ERROR,
                                     "code": ERR_OBS_VALIDATION,
                                     "message": str(e),
-                                }
+                                },
+                                binary,
                             )
                         )
                     except Exception as e:
                         logger.exception("Error processing message")
                         await websocket.send(
-                            json.dumps(
+                            _encode_wire_message(
                                 {
                                     "type": ERROR,
                                     "code": ERR_INTERNAL,
                                     "message": str(e),
-                                }
+                                },
+                                binary,
                             )
                         )
             except websockets.exceptions.ConnectionClosed:
@@ -298,7 +374,11 @@ class PolicyServer:
                 await asyncio.Future()  # run forever
 
         logger.info("Starting PolicyServer: ws://%s:%d", host, port)
-        asyncio.run(serve())
+        try:
+            asyncio.run(serve())
+        finally:
+            # Flush queued decoded videos when the process is stopped normally.
+            self.shutdown()
 
 
 def merge_deploy_cfg(training_cfg, deploy_cfg):

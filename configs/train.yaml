@@ -4,6 +4,12 @@ defaults:
   - _self_
 
 training:
+  # TrainingRTC is opt-in; missing/false preserves ordinary training.
+  rtc:
+    enabled: false
+    max_prefix_steps: 12
+    zero_prefix_probability: 0.25
+
   # --- Debug ---
   debug: false                    # Debug mode: max_steps=20, save@10, constant LR
 

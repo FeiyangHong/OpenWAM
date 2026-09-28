@@ -1,5 +1,7 @@
 # Grasp Anything Wuji 训练用法
 
+TrainingRTC 训练见 [训练用法](training_rtc_usage.md)，独立真机 server/client 见 [部署用法](wuji_rtc_deployment_usage.md)。默认关闭。
+
 仓库根目录为 `/gaozt-test1/fyhong/OpenWAM`。
 
 ## 转换数据

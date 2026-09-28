@@ -138,6 +138,14 @@ class OpenWAMTrainer:
             resolved_arch.canonical.variant,
         )
 
+        from openwam.model.architectures.utils.training_rtc import configure_training_rtc
+
+        configure_training_rtc(
+            self.architecture, t.get("rtc"),
+            saved_cfg=ckpt_cfg.training.get("rtc") if resume_path else None,
+            resume=bool(resume_path),
+        )
+
         # Device placement: skip .to(device) when initialize_model_on_cpu and a real
         # training Accelerator is present — DeepSpeed's prepare() then handles the move.
         _init_on_cpu = bool(t.get("initialize_model_on_cpu", False))
