@@ -1,5 +1,7 @@
 # Grasp Anything Wuji 训练用法
 
+TrainingRTC 可选训练与异步部署见 [TrainingRTC usage](training_rtc_usage.md)。默认关闭，不改变本文原有训练命令。
+
 仓库根目录为 `/gaozt-test1/fyhong/OpenWAM`。
 
 ## 转换数据
@@ -123,7 +125,7 @@ export WANDB_CONFIG_DIR="$PWD/wandb/config"
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 NPROC_PER_NODE=8 \
 FINETUNE_CKPT_PATH=assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Pretrain-Foundation-Model \
-OUTPUT_PATH=outputs/grasp_anything_wuji \
+OUTPUT_PATH=outputs/grasp_anything_base \
 BATCH_SIZE=32 \
 GRADIENT_ACCUMULATION_STEPS=2 \
 NUM_EPOCHS=20 \
@@ -140,12 +142,12 @@ bash scripts/train_grasp_anything_wuji.sh \
 ```
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-NPROC_PER_NODE=8 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+NPROC_PER_NODE=4 \
 FINETUNE_CKPT_PATH=assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Pretrain-Foundation-Model \
-OUTPUT_PATH=outputs/grasp_anything_wuji \
+OUTPUT_PATH=outputs/grasp_anything_base \
 BATCH_SIZE=32 \
-GRADIENT_ACCUMULATION_STEPS=2 \
+GRADIENT_ACCUMULATION_STEPS=4 \
 NUM_EPOCHS=20 \
 LEARNING_RATE=5e-5 \
 MIXED_PRECISION=bf16 \
@@ -156,7 +158,7 @@ SAVE_STEPS=1000 \
 SAVE_FULL_STATES_FOR_RESUME=true \
 KEEP_LAST_K_CKPTS=5 \
 bash scripts/train_grasp_anything_wuji.sh \
-  dataloader.dataset_dir=/gaozt-test1/fyhong/OpenWAM/data/spray_water/spray_water_eef_rot6d_col
+  dataloader.dataset_dir=/gaozt-test1/fyhong/OpenWAM/data/grasp_anything/grasp_anything_eef_rot6d_col
 ```
 
 FINETUNE_CKPT_PATH=assets/openwam_ckpt/openwam_alpha/OpenWAM-Alpha-Pretrain-Foundation-Model \

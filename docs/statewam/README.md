@@ -31,7 +31,7 @@ docs/statewam/
 | 阶段 / Goal | 状态 | 入口与交付 |
 |---|---|---|
 | R1 / robotwin-smoke | 工程验收完成：200 步 profiling、恢复到 201、基线/StateWAM 双条件 smoke | [GOAL](stages/r1/robotwin-smoke/GOAL.md)、[REPORT](stages/r1/robotwin-smoke/REPORT.md)、[USAGE](stages/r1/robotwin-smoke/USAGE.md) |
-| R2 / robotwin-pilot | 执行中：P0 通过、P1 进行中；最多 4 卡连续推进，无需二次预算确认 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)、[REPORT](stages/r2/robotwin-pilot/REPORT.md)、[USAGE](stages/r2/robotwin-pilot/USAGE.md) |
+| R2 / robotwin-pilot | 未完成：P2 工程验收通过，含配对 profiling、实模型/物理恢复、500 场景清单、20 项跨进程初态审计和 8-episode 三卡生命周期 smoke；正式协议、训练/评测未开始，历史越界/失败保留 | [GOAL](stages/r2/robotwin-pilot/GOAL.md)、[REPORT](stages/r2/robotwin-pilot/REPORT.md)、[USAGE](stages/r2/robotwin-pilot/USAGE.md) |
 
 已完成 R1 工程验收，固化提交为 `98089d1fa612b7d1f0349ae68b3b8b0ef690aef7`。当前执行 R2 的 from-Foundation E0–E3 公平结构比较 pilot；完整 benchmark 和后续研究阶段不自动执行。
 
@@ -77,3 +77,5 @@ docs/statewam/
 2026-09-12：在 R2 Goal 中补充独立任务与持久监控、对话中断边界、检查点与逐 episode 恢复、显式停止及资源释放要求，纳入 P2 验收和后续 USAGE。所有要求仍为待实现计划，本次未启动 R2。
 
 2026-09-12：用户正式下达 R2 Goal。固化计划并建立 R2 分支，开始数据审计和公平性工具；在 R2 独立目录建立执行报告与准备阶段 usage，尚未开始正式训练或评测。
+
+2026-09-13：同步 R2 Goal、REPORT、USAGE 与总索引：三卡多服务生命周期 smoke 已完成并通过 8/8 episode 独立审计；保留工程阶段 failure/action_limit、资源归属盲区及正式协议/训练/评测未开始的状态。本次仅更新文档，未启动新计算任务。

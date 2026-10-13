@@ -67,8 +67,8 @@ class ActionDiTState:
     """
 
     x_action: torch.Tensor  # (B, T_action, dim)
-    t_mod: torch.Tensor  # (B, t_mod_params, dim)
-    t_embed: torch.Tensor  # (B, dim)
+    t_mod: torch.Tensor  # (B, t_mod_params, dim), or RTC (B, T_action, t_mod_params, dim)
+    t_embed: torch.Tensor  # (B, dim), or RTC (B, T_action, dim)
     action_freqs: torch.Tensor  # 1D RoPE frequencies for action positions
     context: Optional[torch.Tensor] = None  # (B, T_context, dim), action-projected raw text/proprio context
     context_mask: Optional[torch.Tensor] = None  # (B, T_context) or (B, T_action, T_context), True means attendable
@@ -723,9 +723,15 @@ class ActionDiT(ActionDiTBackbone):
         from openwam.model.architectures.base import ActionState
 
         x = self._embed_actions(noisy_actions)
-        timestep = self._prepare_timestep(timestep, noisy_actions.shape[0])
-        t = self.time_embedding(timestep)
-        t_mod = self.time_projection(t)
+        if timestep.ndim == 2:
+            if self.variant != "joint_self_attn" or timestep.shape != noisy_actions.shape[:2]:
+                raise ValueError("Token timesteps require joint_self_attn and shape [B,T_action]")
+            t = self.time_embedding(timestep.reshape(-1)).reshape(*timestep.shape, -1)
+            t_mod = self.time_projection(t)
+        else:
+            timestep = self._prepare_timestep(timestep, noisy_actions.shape[0])
+            t = self.time_embedding(timestep)
+            t_mod = self.time_projection(t)
         action_freqs = self._get_rope_freqs(x.shape[1]).to(device=x.device)
 
         action_context = None
@@ -787,9 +793,12 @@ class ActionDiT(ActionDiTBackbone):
         payload: ActionDiTState = astate.payload
         block: SelfAttnActionDiTBlock = self.blocks[layer_id]
 
-        chunks = (block.modulation.to(dtype=payload.t_mod.dtype, device=payload.t_mod.device) + payload.t_mod).chunk(
-            6, dim=1
-        )
+        if payload.t_mod.ndim == 4:
+            chunks = (block.modulation.to(payload.t_mod).unsqueeze(1) + payload.t_mod).unbind(dim=2)
+        else:
+            chunks = (block.modulation.to(dtype=payload.t_mod.dtype, device=payload.t_mod.device) + payload.t_mod).chunk(
+                6, dim=1
+            )
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = chunks
 
         residual_x = payload.x_action

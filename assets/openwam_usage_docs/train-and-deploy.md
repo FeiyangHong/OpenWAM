@@ -186,6 +186,25 @@ Each registered class implements from_config(config, split) and returns window s
 
 With a pretrained video backbone, a fresh run loads the selected components and trains the unfrozen modules from step zero. from_scratch rebuilds the Wan2.2 DiT input/output projections around an external encoder.
 
+The original OpenWAM training path is launched through `scripts/train.sh`; it
+calls `scripts/train.py`, whose `_train_openwam()` function builds the selected
+dataloader and runs `OpenWAMTrainer`. With the repository defaults
+(`model=dual_system` and `dataloader=robotwin`), launch a full run with:
+
+~~~bash
+bash scripts/train.sh \
+  model=dual_system \
+  dataloader=robotwin \
+  dataloader.dataset_dir=<dataset_dir_path> \
+  training.output_path=<output_dir_path>
+~~~
+
+The command uses the default five epochs, per-GPU batch size, precision, and
+DeepSpeed ZeRO stage from [`configs/train.yaml`](../../configs/train.yaml).
+For a short smoke run, add `training.debug=true`; this caps the run at 20
+micro-steps and saves checkpoints at steps 10 and 20. For a step-bounded run,
+set `training.max_steps=<n>` explicitly.
+
 ~~~bash
 # Model and dataloader
 bash scripts/train.sh model=dual_system dataloader=robotwin \

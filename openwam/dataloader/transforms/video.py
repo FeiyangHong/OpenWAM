@@ -134,7 +134,7 @@ class VideoColorJitter(ModalityTransform):
         self.saturation = saturation
         self.hue = hue
 
-    def apply(self, data: dict) -> dict:
+    def apply(self, data: dict, *, rng=None) -> dict:
         if not self.training:
             return data
 
@@ -149,9 +149,10 @@ class VideoColorJitter(ModalityTransform):
             )
 
         # Sample random factors (same for all frames)
-        b_factor = 1.0 + random.uniform(-self.brightness, self.brightness)
-        c_factor = 1.0 + random.uniform(-self.contrast, self.contrast)
-        s_factor = 1.0 + random.uniform(-self.saturation, self.saturation)
+        rng = random if rng is None else rng
+        b_factor = 1.0 + rng.uniform(-self.brightness, self.brightness)
+        c_factor = 1.0 + rng.uniform(-self.contrast, self.contrast)
+        s_factor = 1.0 + rng.uniform(-self.saturation, self.saturation)
 
         augmented = []
         for index, frame in enumerate(data["video"]):

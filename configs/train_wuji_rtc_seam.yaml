@@ -1,0 +1,22 @@
+# Matched synchronous18000 -> history RTC training; optional seam loss only.
+defaults:
+  - train_wuji_rtc_history
+  - _self_
+
+training:
+  finetune_ckpt_path: /gaozt-test1/fyhong/OpenWAM/outputs/grasp_anything_base/2026-09-16_21-50-22/checkpoint_step_18000.safetensors
+  resume_ckpt_path: null
+  num_epochs: 10
+  max_steps: null
+  learning_rate: 1.0e-5
+  batch_size: 32
+  gradient_accumulation_steps: 2
+  save_steps: 500
+  keep_last_k_ckpts: 12
+  output_path: /gaozt-test1/fyhong/OpenWAM/outputs/wuji_rtc_seam
+  rtc_state_history:
+    enabled: true
+  rtc_seam_loss:
+    enabled: false
+    steps: 3
+    weight: 2.0

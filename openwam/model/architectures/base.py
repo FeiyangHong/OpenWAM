@@ -1037,6 +1037,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
             ]
             inputs["video_is_pad"] = torch.stack(latent_masks, dim=0).to(device=_device)
 
+        if getattr(getattr(self, "rtc_state_history", None), "enabled", False):
+            from openwam.model.architectures.utils.rtc_state_history import collate_history
+            inputs.update(collate_history(samples))
+
         return inputs
 
     # --- Training: loss computation ---
@@ -1047,6 +1051,8 @@ class BaseWAMArchitecture(ABC, nn.Module):
         actions: Optional[torch.Tensor] = None,
         lambda_video: float = 1.0,
         lambda_action: float = 1.0,
+        flow_randomness: Optional[dict] = None,
+        rtc_prefix_lengths: Optional[Tensor] = None,
         **inputs,
     ) -> dict:
         """Compute joint video-action flow matching loss.
@@ -1066,6 +1072,9 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 be passed via ``inputs["actions"]``.
             lambda_video: Weight for video loss term.
             lambda_action: Weight for action loss term.
+            flow_randomness: Optional explicit per-sample timestep IDs and noise.
+            rtc_prefix_lengths: Optional integer [B] lengths for deterministic RTC
+                experiments/tests; requires enabled training_rtc. Otherwise sampled.
             **inputs: Preprocessed video/text tensors plus forward-time flags.
 
         Returns:
@@ -1084,15 +1093,29 @@ class BaseWAMArchitecture(ABC, nn.Module):
         max_tb = int(inputs.pop("max_timestep_boundary", 1) * len(vb.scheduler.timesteps))
         min_tb = int(inputs.pop("min_timestep_boundary", 0) * len(vb.scheduler.timesteps))
         B = inputs["input_latents"].shape[0]
+        if flow_randomness is not None:
+            from openwam.model.architectures.utils.flow_randomness import validate_flow_randomness
+
+            if actions is not None and lambda_action > 0:
+                actions = actions.to(dtype=_dtype, device=_device)
+                if actions.dim() == 2:
+                    actions = actions.unsqueeze(0)
+            validate_flow_randomness(
+                flow_randomness, video=inputs["input_latents"],
+                actions=actions if lambda_action > 0 else None,
+                video_bounds=(min_tb, max_tb), action_count=len(action_scheduler.timesteps),
+            )
 
         # --- Sample video timesteps ---
-        video_timestep_ids = torch.randint(min_tb, max_tb, (B,))
+        video_timestep_ids = (torch.randint(min_tb, max_tb, (B,)) if flow_randomness is None
+                              else flow_randomness["video_timestep_ids"])
 
         video_timesteps = vb.scheduler.timesteps[video_timestep_ids].to(dtype=_dtype, device=_device)
         video_sigmas = vb.scheduler.sigmas[video_timestep_ids].to(dtype=_dtype, device=_device)
 
         # --- Add video noise (flow-matching: linear interp + velocity target) ---
-        video_noise = torch.randn_like(inputs["input_latents"])
+        video_noise = (torch.randn_like(inputs["input_latents"]) if flow_randomness is None
+                       else flow_randomness["video_noise"])
         sigma_bc = video_sigmas.view(B, 1, 1, 1, 1)
         inputs["latents"] = (1 - sigma_bc) * inputs["input_latents"] + sigma_bc * video_noise
         video_target = video_noise - inputs["input_latents"]
@@ -1110,7 +1133,8 @@ class BaseWAMArchitecture(ABC, nn.Module):
             None,
         )
         if lambda_action > 0 and actions is not None:
-            action_timestep_ids = torch.randint(0, len(action_scheduler.timesteps), (B,))
+            action_timestep_ids = (torch.randint(0, len(action_scheduler.timesteps), (B,)) if flow_randomness is None
+                                   else flow_randomness["action_timestep_ids"])
 
             action_timesteps = action_scheduler.timesteps[action_timestep_ids].to(dtype=_dtype, device=_device)
             action_sigmas = action_scheduler.sigmas[action_timestep_ids].to(dtype=_dtype, device=_device)
@@ -1119,7 +1143,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
             if actions.dim() == 2:
                 actions = actions.unsqueeze(0)
 
-            action_noise = torch.randn_like(actions)
+            action_noise = torch.randn_like(actions) if flow_randomness is None else flow_randomness["action_noise"]
             if action_sigmas.dim() == 1:
                 a_sigma_bc = action_sigmas.view(B, 1, 1)
             else:
@@ -1127,10 +1151,60 @@ class BaseWAMArchitecture(ABC, nn.Module):
             noisy_actions = action_scheduler.add_noise(actions, action_noise, a_sigma_bc)
             action_target = action_scheduler.training_target(actions, action_noise)
 
+        rtc = getattr(self, "training_rtc", None)
+        action_loss_inputs = inputs
+        if rtc is not None and rtc.enabled:
+            from openwam.model.architectures.utils.training_rtc import make_training_prefix, require_rtc_architecture
+
+            require_rtc_architecture(self)
+            if noisy_actions is None:
+                raise ValueError("TrainingRTC requires actions and lambda_action > 0")
+            noisy_actions, action_timesteps, rtc_loss_pad = make_training_prefix(
+                actions, noisy_actions, action_timesteps, inputs.get("action_is_pad"), rtc, rtc_prefix_lengths,
+                sampling_config=getattr(self, "rtc_prefix_sampling", None),
+            )
+            action_loss_inputs = dict(inputs, action_is_pad=rtc_loss_pad)
+            from openwam.model.architectures.utils.rtc_seam_loss import make_seam_weights
+            seam_weights = make_seam_weights(
+                actions, inputs.get("action_is_pad"), rtc_loss_pad,
+                getattr(self, "rtc_seam_loss", None),
+            )
+            if seam_weights is not None:
+                action_loss_inputs["rtc_seam_weights"] = seam_weights
+        elif rtc_prefix_lengths is not None:
+            raise ValueError("rtc_prefix_lengths requires TrainingRTC enabled")
+
         # --- Joint forward pass ---
         forward_inputs = dict(inputs)
         proprio = forward_inputs.pop("proprio", None)
         proprio_mask = forward_inputs.pop("proprio_mask", None)
+        state_aug = getattr(self, "rtc_state_augmentation", None)
+        if rtc is not None and rtc.enabled and state_aug is not None and state_aug.enabled:
+            augmenter = getattr(self, "rtc_state_augmenter", None)
+            if augmenter is None:
+                raise ValueError("RTC state augmentation requires training dataset normalization metadata")
+            original_pad = inputs.get("action_is_pad")
+            if rtc_loss_pad is None:
+                has_prefix = torch.zeros(B, dtype=torch.bool)
+            else:
+                added_pad = rtc_loss_pad if original_pad is None else rtc_loss_pad & ~original_pad.to(device=rtc_loss_pad.device, dtype=torch.bool)
+                has_prefix = added_pad.reshape(B, -1).any(dim=-1).detach().cpu()
+            proprio = augmenter(proprio, has_prefix, proprio_mask)
+        history_states = forward_inputs.pop("rtc_history_states", None)
+        history_valid = forward_inputs.pop("rtc_history_valid", None)
+        history_cfg = getattr(self, "rtc_state_history", None)
+        if history_cfg is not None and history_cfg.enabled:
+            from openwam.model.architectures.utils.rtc_state_history import apply_history
+            if rtc is None or not rtc.enabled:
+                raise ValueError("RTC state history requires TrainingRTC")
+            original_pad = inputs.get("action_is_pad")
+            if rtc_loss_pad is None:
+                has_prefix = torch.zeros(B, dtype=torch.bool)
+            else:
+                added_pad = rtc_loss_pad if original_pad is None else rtc_loss_pad & ~original_pad.to(device=rtc_loss_pad.device, dtype=torch.bool)
+                has_prefix = added_pad.reshape(B, -1).any(-1).detach().cpu()
+            proprio, self.rtc_state_history_metrics = apply_history(
+                proprio, has_prefix, history_states, history_valid, history_cfg)
         use_grad_ckpt = forward_inputs.pop("use_gradient_checkpointing", False)
         use_grad_ckpt_offload = forward_inputs.pop("use_gradient_checkpointing_offload", False)
         # Padding masks are kept in `inputs` for loss-side masking but dropped
@@ -1178,7 +1252,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
             action_target,
             action_timestep_ids,
             action_scheduler,
-            inputs,
+            action_loss_inputs,
             _device,
         )
 
@@ -1280,6 +1354,11 @@ class BaseWAMArchitecture(ABC, nn.Module):
         per_element = F.mse_loss(noise_pred.float(), target.float(), reduction="none")
 
         action_is_pad = inputs.get("action_is_pad")
+        seam_weights = inputs.get("rtc_seam_weights")
+        if seam_weights is not None:
+            from openwam.model.architectures.utils.rtc_seam_loss import weighted_action_mean
+            per_sample = weighted_action_mean(per_element, action_is_pad, seam_weights)
+            return (per_sample * tw).mean()
 
         if action_is_pad is None:
             per_sample = per_element.mean(dim=(1, 2))
@@ -1370,6 +1449,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         height: int = 384,
         width: int = 320,
         seed: int = 42,
+        action_seed: Optional[int] = None,
         tiled: bool = True,
         input_video_latents: Optional[Tensor] = None,
         num_inference_steps: int = 50,
@@ -1385,6 +1465,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
         cfg_scale: float = 1.0,
         cfg_merge: bool = False,
         active_action_mask: Optional[Tensor] = None,
+        rtc_prefix: Optional[Tensor] = None,
         **extra_pipeline_inputs: Any,
     ) -> dict:
         """Execute joint video-action denoising driven by a schedule.
@@ -1399,10 +1480,14 @@ class BaseWAMArchitecture(ABC, nn.Module):
             action_num_frames: Raw state/action window length. Generated
                 action chunk length is ``action_num_frames - 1``. Defaults to
                 ``num_frames`` for datasets whose video/action rates match.
+            action_seed: Optional independent action-noise seed. When omitted,
+                reuse ``seed`` to preserve the existing inference trajectory.
             active_action_mask: Optional ``(action_dim,)`` boolean mask for the
                 benchmark being generated. Inactive unified-action dimensions
                 stay on their analytic zero-padding noise path. When omitted,
                 the mask is inferred from the attached unified normalizer.
+            rtc_prefix: Optional clean committed actions ``(d, action_dim)`` in
+                normalized model space. Requires an RTC-trained checkpoint.
 
         Returns:
             dict with ``video`` (list of PIL images or None) and
@@ -1423,6 +1508,9 @@ class BaseWAMArchitecture(ABC, nn.Module):
         device = self.device
         dtype = self.dtype
 
+        if action_seed is not None and (type(action_seed) is not int or not 0 <= action_seed < 2**64):
+            raise ValueError("action_seed must be an unsigned 64-bit integer or None")
+
         t0 = time.time()
 
         # §15 — validate CFG up front. CFG vs dit_cache (§15.D6): cond/uncond
@@ -1438,6 +1526,13 @@ class BaseWAMArchitecture(ABC, nn.Module):
             dit_cache = None
 
         action_num_frames = int(action_num_frames if action_num_frames is not None else num_frames)
+        prefix = None
+        if rtc_prefix is not None:
+            from openwam.model.architectures.utils.training_rtc import prepare_inference_prefix
+
+            prefix = prepare_inference_prefix(self, rtc_prefix, action_num_frames - 1, device, dtype)
+            # Cached velocities must not cross prefix-conditioned forward states.
+            dit_cache = None
 
         # CFG knobs ARE forwarded so a CFG-capable backbone (CosmosPredict25)
         # can materialise ``inputs_shared['uncond_context']`` from its own
@@ -1491,7 +1586,7 @@ class BaseWAMArchitecture(ABC, nn.Module):
             self.action_dim,
             device=device,
             dtype=dtype,
-            generator=torch.Generator(device=device).manual_seed(seed),
+            generator=torch.Generator(device=device).manual_seed(seed if action_seed is None else action_seed),
         )
 
         # Unified-action checkpoints scatter raw actions into a larger zero-padded
@@ -1528,6 +1623,10 @@ class BaseWAMArchitecture(ABC, nn.Module):
             # only gates the *update* below, never the forward inputs.
             v_timestep = torch.tensor([t_v], dtype=dtype, device=device)
             a_timestep = torch.tensor([t_a], dtype=dtype, device=device)
+            if prefix is not None:
+                action_latents[:, :prefix.shape[1]] = prefix
+                a_timestep = a_timestep[:, None].expand(1, action_num_frames - 1).clone()
+                a_timestep[:, :prefix.shape[1]] = 0
 
             if (
                 dit_cache is not None
@@ -1581,6 +1680,9 @@ class BaseWAMArchitecture(ABC, nn.Module):
                 )
                 if inactive_action_dims is not None:
                     action_latents[..., inactive_action_dims] = inactive_action_noise * float(sigma_a_next)
+
+            if prefix is not None:
+                action_latents[:, :prefix.shape[1]] = prefix
 
         if profile:
             if torch.cuda.is_available():

@@ -1,0 +1,40 @@
+{
+  "files": {
+    "openwam/model/architectures/utils/training_rtc.py": {
+      "before": "8617bd8c61c0c73192e0d1f17771f17b4f3f119d8efbac570b799f1377556371",
+      "after": "65fd0bdf285fa8b26e10933effb5059504f1c310382649f43365b11406afe569"
+    },
+    "openwam/model/architectures/utils/rtc_prefix_sampling.py": {
+      "before": null,
+      "after": "1d884fc809342382cf591b04d2aedd9fe25cb9d98760de67798a654b01774712"
+    },
+    "openwam/model/architectures/base.py": {
+      "before": "567a97e69524da0bd753d5e588e105ad8305130306245b8e507c2b359b6ecb57",
+      "after": "c5247346b91fda02fb79639d8775125f4f14c6d25d7f5da44ceeca55ea3021c3"
+    },
+    "openwam/train/openwam_trainer.py": {
+      "before": "40abc0e10ec6b74170f87561fbcdba5cf7d07ad990d93a7a45587c1e7d131821",
+      "after": "a240d40319dc1f01bff2927c63009a9d88b246cc6bf502de1f3b9b5fa7bfa326"
+    },
+    "configs/train_wuji_rtc_prefix_pmf.yaml": {
+      "before": null,
+      "after": "be4a6dfc165771fc68f7b65a0253cfd479235da2e3be0635fe8ed1fe5206be46"
+    },
+    "scripts/train_wuji_rtc_prefix_pmf.sh": {
+      "before": null,
+      "after": "f831d312f5fa0486bf1186e648a55506599bdaed7fc24e40292f132e3fc9d5c9"
+    },
+    "tests/test_rtc_prefix_sampling.py": {
+      "before": null,
+      "after": "52757601a764aae45011ed8f52e4113309b13459bb47b038287052c2ef43ecd1"
+    }
+  },
+  "context": {
+    "scripts/train_wuji_rtc_seam.sh": "7343884589cf4c0608205f8227b19c6b603111b2144bdc28fe90b54802e98809",
+    "configs/train_wuji_rtc_seam.yaml": "e5d340001b135b780ed5aec365ebc5e5402dc8273118339e25fb8e81c0a15e0e",
+    "configs/train_wuji_rtc_history.yaml": "5ade1172b0ec13cc0cabb490f9e2a2ee8d8ae260c91e18f271d9b0d76b9e9e23",
+    "configs/train_wuji_rtc_ab.yaml": "1903db0636399ec6f1b5caa4aac49597fc99f6415e7696f8be4f30bde1103724",
+    "tests/test_rtc_seam_loss.py": "17ef99311ecb513fb1cd5f949666abdf67277ee4abccfcafbfe2b36241e4bbe3"
+  },
+  "patch_sha256": "4fa9a9e56e8a6b81f0da0b13b2baafcef055732b3b7cd5aa17a95de78ee23f80"
+}

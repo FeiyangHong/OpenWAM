@@ -233,6 +233,11 @@ def load_from_checkpoint_dir(
     # training cfg at this point).
     architecture.repr_contract = repr_contract_from_cfg(cfg)
 
+    # Bind capability to the saved training config, before any deploy overrides.
+    from openwam.model.architectures.utils.training_rtc import configure_training_rtc
+
+    configure_training_rtc(architecture, OmegaConf.select(cfg, "training.rtc"))
+
     logger.info("Model loaded successfully on %s", device)
     return cfg, architecture
 
@@ -251,6 +256,17 @@ def repr_contract_from_cfg(cfg: DictConfig) -> dict:
     contract = {
         "representation": str(OmegaConf.select(cfg, "dataloader.action_mode", default="joint")),
     }
+    dataset_type = str(OmegaConf.select(cfg, "dataloader.type", default=""))
+    if dataset_type == "wuji_real_task":
+        contract.update(
+            {
+                "raw_action_dim": 58,
+                "rot6d_convention": str(
+                    OmegaConf.select(cfg, "dataloader.rot6d_convention", default="column")
+                ),
+                "action_layout": "left_eef9,left_hand20,right_eef9,right_hand20",
+            }
+        )
     if dims:
         contract["binary_action_dims"] = [int(d) for d in dims]
     if gripper_convention is not None:
@@ -422,6 +438,13 @@ class _CommandAwareNormalizer:
     def normalize(self, x):
         return self._proprio_inner.normalize(x)
 
+    def normalize_action(self, x):
+        normalize = getattr(self._action_inner, "normalize_action", self._action_inner.normalize)
+        y = np.array(normalize(x), copy=True)
+        for d in self._binary_dims:
+            y[..., d] = np.asarray(x)[..., d]
+        return y
+
     @property
     def stats(self):
         return getattr(self._action_inner, "stats", {})
@@ -481,6 +504,18 @@ class _UnifyAwareNormalizer:
             return arr.copy() if self._inner is None else self._inner.unnormalize(arr)
         raw = self._unmap_from_unify(arr, self._action_dst_index)
         return raw if self._inner is None else self._inner.unnormalize(raw)
+
+    # proprio IN: physical raw → normalized-unified (..., unify_dim) the model wants.
+    def normalize_action(self, x):
+        """Committed raw actions IN, using the action stats and action scatter map."""
+        arr = np.asarray(x)
+        if arr.shape[-1] != len(self._action_dst_index):
+            raise ValueError("RTC action prefix width does not match the checkpoint raw action map")
+        if self._inner is not None:
+            normalize = getattr(self._inner, "normalize_action", self._inner.normalize)
+            arr = normalize(arr)
+        unified, _mask = self._map_to_unify(arr, self._action_dst_index, self._unify_dim)
+        return unified
 
     # proprio IN: physical raw → normalized-unified (..., unify_dim) the model wants.
     def normalize(self, x):

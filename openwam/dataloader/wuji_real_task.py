@@ -186,6 +186,14 @@ class WujiRealTaskDataset(LeRobotV3Reader):
             return None
         return self._normalize_array(self._read_vector(win, "action"))
 
+    def _getitem_impl(self, idx: int) -> dict:
+        sample = super()._getitem_impl(idx)
+        cfg = getattr(self, "rtc_state_history", None)
+        if cfg is not None and cfg.enabled:
+            from openwam.model.architectures.utils.rtc_state_history import read_history
+            sample.update(read_history(self, idx))
+        return sample
+
     def _proprio_20d(self, win: pd.DataFrame):
         return self._normalize_array(self._read_vector(win, "observation.state", first_only=True))
 

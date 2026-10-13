@@ -199,6 +199,7 @@ def _resolve_prompt(
     ep_file: str,
     split: str,
     task_name: str,
+    rng=None,
 ) -> str:
     """Pure function: build the training-time prompt from raw state.
 
@@ -234,7 +235,7 @@ def _resolve_prompt(
             pool = instr.get("seen") or instr.get("unseen") or []
             if pool:
                 if split == "train":
-                    base_prompt = random.choice(pool)
+                    base_prompt = (random if rng is None else rng).choice(pool)
                 else:
                     base_prompt = pool[0]
             elif "instruction" in instr:
@@ -723,7 +724,7 @@ class RoboTwinDataset(BaseDataset):
             )
         return images
 
-    def _get_prompt(self, ep_idx: int) -> str:
+    def _get_prompt(self, ep_idx: int, *, rng=None) -> str:
         """Get the wrapped text prompt for episode *ep_idx*.
 
         Thin wrapper over :func:`_resolve_prompt` — all logic lives in the
@@ -735,6 +736,7 @@ class RoboTwinDataset(BaseDataset):
             ep_file=self._episode_files[ep_idx],
             split=self.split,
             task_name=self.task_name,
+            rng=rng,
         )
 
     def _read_eef_actions(self, f, start: int, end: int) -> np.ndarray:
@@ -775,7 +777,7 @@ class RoboTwinDataset(BaseDataset):
             return self._read_eef_actions(f, start, end)
         return f["joint_action/vector"][start:end].astype(np.float32)
 
-    def _build_sample(self, ep_idx: int, start: int) -> dict:
+    def _build_sample(self, ep_idx: int, start: int, *, instruction_rng=None) -> dict:
         """Assemble a single sample at (ep_idx, start).
 
         - ``num_frames``: raw HDF5 window length (state/action rate).
@@ -860,7 +862,7 @@ class RoboTwinDataset(BaseDataset):
             action_mask = action_mask & dim_valid.unsqueeze(0)
             proprio_mask = proprio_mask & dim_valid.unsqueeze(0)
 
-        prompt = self._get_prompt(ep_idx)
+        prompt = self._get_prompt(ep_idx, rng=instruction_rng)
 
         ep_number = int(os.path.basename(path).removeprefix("episode").removesuffix(".hdf5"))
         ep_key = f"episode_{ep_number}"
@@ -891,12 +893,20 @@ class RoboTwinDataset(BaseDataset):
         }
 
     def __getitem__(self, idx):
+        return self.get_sample(idx)
+
+    def get_sample(self, idx, *, instruction_seed=None, augmentation_seed=None):
+        """Optional invocation-local RNGs allow paired sampling and exact replay."""
         ep_idx, start = self._window_index[idx]
 
-        sample = self._build_sample(ep_idx, start)
+        if instruction_seed is None:
+            sample = self._build_sample(ep_idx, start)
+        else:
+            sample = self._build_sample(ep_idx, start, instruction_rng=random.Random(instruction_seed))
         if self._color_jitter is not None:
             # Same jitter factors across the whole clip (temporal consistency).
-            sample["video"] = self._color_jitter.apply({"video": sample["video"]})["video"]
+            rng = None if augmentation_seed is None else random.Random(augmentation_seed)
+            sample["video"] = self._color_jitter.apply({"video": sample["video"]}, rng=rng)["video"]
             # Keep the first-frame conditioning image in sync with the jittered clip.
             sample["first_frame_image"] = [sample["video"][0]]
         return sample

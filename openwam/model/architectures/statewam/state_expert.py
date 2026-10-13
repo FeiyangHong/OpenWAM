@@ -7,6 +7,22 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def _adaptive_mean_last(value, output_size):
+    size = value.shape[-1]
+    if output_size < 1 or size < 1:
+        raise ValueError("Pooling dimensions must be positive")
+    if size % output_size == 0:
+        return value.reshape(*value.shape[:-1], output_size, size // output_size).mean(-1)
+    # The same floor/ceil bins as adaptive pooling, without its atomic CUDA backward.
+    bins = torch.arange(output_size, device=value.device)
+    start = bins * size // output_size
+    end = ((bins + 1) * size + output_size - 1) // output_size
+    positions = torch.arange(size, device=value.device)
+    weights = ((positions[None, :] >= start[:, None]) & (positions[None, :] < end[:, None])).to(value.dtype)
+    weights = weights / (end - start)[:, None]
+    return value @ weights.T
+
+
 class CrossAttention(nn.Module):
     def __init__(self, dim, heads):
         super().__init__()
@@ -111,11 +127,16 @@ class InteractionStateExpert(nn.Module):
     @staticmethod
     def current_capacity_source(video, valid, *, tokens, dim):
         """Parameter-free, masked pooling into the action reader's input geometry."""
-        video = video.masked_fill(~valid[..., None], 0)
-        pooled = F.adaptive_avg_pool2d(video.unsqueeze(1), (tokens, dim)).squeeze(1)
-        weights = F.adaptive_avg_pool1d(valid.to(video.dtype).unsqueeze(1), tokens).transpose(1, 2)
-        pooled = pooled / weights.clamp_min(torch.finfo(video.dtype).tiny)
-        return pooled, weights.squeeze(-1) > 0
+        dtype = video.dtype
+        with torch.autocast(device_type=video.device.type, enabled=False):
+            video = video.masked_fill(~valid[..., None], 0)
+            if dtype in (torch.float16, torch.bfloat16):
+                video = video.float()
+            pooled = _adaptive_mean_last(video, dim)
+            pooled = _adaptive_mean_last(pooled.transpose(1, 2), tokens).transpose(1, 2)
+            weights = _adaptive_mean_last(valid.to(video.dtype), tokens)
+            pooled = pooled / weights[..., None].clamp_min(torch.finfo(video.dtype).tiny)
+        return pooled.to(dtype), weights > 0
 
     @staticmethod
     def positions(frames, height, width, *, device, dtype):

@@ -38,7 +38,18 @@ class WAMPolicy:
 
         self._execution_config = normalize_execution_config(execution_config)
         self._async = self._execution_config.enabled
-        if self._async:
+        from openwam.deploy.executors.async_executor import _select
+
+        if _select(cfg, "inference.rtc.enabled", False):
+            from openwam.deploy.executors.rtc_executor import TrainingRTCExecutor
+
+            if not self._async:
+                raise ValueError("TrainingRTC execution requires inference_mode=async")
+            self._executor = TrainingRTCExecutor(
+                engine, self._execution_config.inference_horizon,
+                self._execution_config.inference_delay_steps,
+            )
+        elif self._async:
             self._executor = AsyncInferenceExecutor(
                 engine=engine,
                 inference_horizon=self._execution_config.inference_horizon,
@@ -80,6 +91,9 @@ class WAMPolicy:
     def shutdown(self):
         """Release executor resources (background threads in async mode)."""
         self._executor.shutdown()
+        shutdown = getattr(self.engine, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
 
     def _build_conditions(self, obs: dict) -> dict:
         """Assemble inference conditions from the current observation.
@@ -91,6 +105,10 @@ class WAMPolicy:
         conditions = {
             "observation": obs,
         }
+        if obs.get("_video_save_session_id") is not None:
+            conditions["video_save_session_id"] = obs["_video_save_session_id"]
+        if obs.get("_video_save_episode_id") is not None:
+            conditions["video_save_episode_id"] = obs["_video_save_episode_id"]
         img = obs.get("image")
         if img is not None:
             # Single first frame — pipeline expects list[PIL.Image]

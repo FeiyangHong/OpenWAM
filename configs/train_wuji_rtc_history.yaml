@@ -1,0 +1,26 @@
+# Opt-in full-state history experiment. Existing train/RTC configs unchanged.
+defaults:
+  - train_wuji_rtc_ab
+  - _self_
+
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 2
+  num_epochs: 10
+  max_steps: null
+  learning_rate: 1.0e-5
+  save_steps: 500
+  keep_last_k_ckpts: 8
+  finetune_ckpt_path: /gaozt-test1/fyhong/OpenWAM/outputs/grasp_anything_base/2026-09-16_21-50-22/checkpoint_step_18000.safetensors
+  resume_ckpt_path: null
+  output_path: /gaozt-test1/fyhong/OpenWAM/outputs/wuji_rtc_history
+  rtc_state_augmentation:
+    enabled: false
+  rtc_state_history:
+    enabled: false
+    probability: 0.30
+    max_history_steps: 3
+    # null: use actual historical state without extra physical-amplitude caps.
+    max_translation_m: null
+    max_rotation_deg: null
+    max_joint_rad: null

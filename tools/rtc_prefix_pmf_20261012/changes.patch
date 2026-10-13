@@ -1,0 +1,330 @@
+--- a/openwam/model/architectures/utils/training_rtc.py
++++ b/openwam/model/architectures/utils/training_rtc.py
+@@ -47,7 +47,7 @@
+     return config
+ 
+ 
+-def make_training_prefix(actions, noisy_actions, timesteps, is_pad, config, prefix_lengths=None):
++def make_training_prefix(actions, noisy_actions, timesteps, is_pad, config, prefix_lengths=None, *, sampling_config=None):
+     """Return noisy input, forward times and loss mask without changing loss weights.
+ 
+     Prefixes never include padding or consume the last valid supervised action.
+@@ -67,7 +67,11 @@
+     usable = valid.long().cumprod(dim=1).sum(dim=1)
+     limits = (usable - 1).clamp(min=0, max=config.max_prefix_steps)
+     if prefix_lengths is None:
+-        if config.max_prefix_steps == 0 or config.zero_prefix_probability == 1:
++        if sampling_config is not None and sampling_config.enabled:
++            from .rtc_prefix_sampling import sample_prefix_lengths
++            lengths = sample_prefix_lengths(batch, config.max_prefix_steps, sampling_config)
++            lengths = torch.minimum(lengths.to(actions.device), limits)
++        elif config.max_prefix_steps == 0 or config.zero_prefix_probability == 1:
+             lengths = torch.zeros(batch, dtype=torch.long, device=actions.device)
+         else:
+             lengths = torch.randint(1, config.max_prefix_steps + 1, (batch,))
+--- /dev/null
++++ b/openwam/model/architectures/utils/rtc_prefix_sampling.py
+@@ -0,0 +1,65 @@
++"""Training-only opt-in prefix PMF; default RTC and inference contract stay intact."""
++from dataclasses import dataclass
++import math
++from numbers import Real
++
++import torch
++
++
++@dataclass(frozen=True)
++class RTCPrefixSamplingConfig:
++    enabled: bool = False
++    probabilities: tuple | None = None
++
++    @classmethod
++    def from_config(cls, cfg=None):
++        if isinstance(cfg, cls):
++            value = cfg
++        else:
++            fields = dict(cfg or {})
++            if fields.get('probabilities') is not None:
++                fields['probabilities'] = tuple(fields['probabilities'])
++            value = cls(**fields)
++        if type(value.enabled) is not bool:
++            raise ValueError('rtc_prefix_sampling.enabled must be boolean')
++        probs = value.probabilities
++        if value.enabled and probs is None:
++            raise ValueError('Enabled RTC prefix sampling requires probabilities for d=0..max_prefix_steps')
++        if probs is not None:
++            if not probs or any(isinstance(p, bool) or not isinstance(p, Real) or not math.isfinite(p) or p < 0 for p in probs):
++                raise ValueError('RTC prefix probabilities must be finite nonnegative numbers')
++            if not math.isclose(sum(probs), 1.0, rel_tol=0, abs_tol=1e-6):
++                raise ValueError('RTC prefix probabilities must sum to 1')
++        return value
++
++
++def configure_rtc_prefix_sampling(architecture, cfg=None, *, saved_cfg=None, resume=False):
++    config = RTCPrefixSamplingConfig.from_config(cfg)
++    if resume:
++        saved = RTCPrefixSamplingConfig.from_config(saved_cfg)
++        if (config.enabled or saved.enabled) and config != saved:
++            raise ValueError('Resume must keep rtc_prefix_sampling; use finetune_ckpt_path for a new experiment')
++    if config.enabled:
++        from .training_rtc import require_rtc_architecture
++        require_rtc_architecture(architecture)
++        rtc = getattr(architecture, 'training_rtc', None)
++        if rtc is None or not rtc.enabled:
++            raise ValueError('RTC prefix sampling requires TrainingRTC enabled')
++        if len(config.probabilities) != rtc.max_prefix_steps + 1:
++            raise ValueError('RTC prefix probabilities must cover exactly d=0..max_prefix_steps')
++    architecture.rtc_prefix_sampling = config
++    return config
++
++
++def sample_prefix_lengths(batch_size, max_prefix_steps, config):
++    """CPU RNG is checkpointed by the existing trainer. Does not draw GPU RNG.
++
++    This PMF includes d=0; zero_prefix_probability is not applied a second time.
++    The caller still caps lengths to each sample's valid action window.
++    """
++    if len(config.probabilities) != max_prefix_steps + 1:
++        raise ValueError('RTC prefix probabilities must cover exactly d=0..max_prefix_steps')
++    if config.probabilities[0] == 1:
++        return torch.zeros(batch_size, dtype=torch.long)
++    probs = torch.tensor(config.probabilities, dtype=torch.float64, device='cpu')
++    return torch.multinomial(probs, batch_size, replacement=True)
+--- a/openwam/model/architectures/base.py
++++ b/openwam/model/architectures/base.py
+@@ -1161,6 +1161,7 @@
+                 raise ValueError("TrainingRTC requires actions and lambda_action > 0")
+             noisy_actions, action_timesteps, rtc_loss_pad = make_training_prefix(
+                 actions, noisy_actions, action_timesteps, inputs.get("action_is_pad"), rtc, rtc_prefix_lengths,
++                sampling_config=getattr(self, "rtc_prefix_sampling", None),
+             )
+             action_loss_inputs = dict(inputs, action_is_pad=rtc_loss_pad)
+             from openwam.model.architectures.utils.rtc_seam_loss import make_seam_weights
+--- a/openwam/train/openwam_trainer.py
++++ b/openwam/train/openwam_trainer.py
+@@ -146,6 +146,13 @@
+         configure_training_rtc(
+             self.architecture, t.get("rtc"),
+             saved_cfg=ckpt_cfg.training.get("rtc") if resume_path else None,
++            resume=bool(resume_path),
++        )
++        from openwam.model.architectures.utils.rtc_prefix_sampling import configure_rtc_prefix_sampling
++
++        configure_rtc_prefix_sampling(
++            self.architecture, t.get("rtc_prefix_sampling"),
++            saved_cfg=ckpt_cfg.training.get("rtc_prefix_sampling") if resume_path else None,
+             resume=bool(resume_path),
+         )
+         from openwam.model.architectures.utils.rtc_seam_loss import configure_rtc_seam_loss
+--- /dev/null
++++ b/configs/train_wuji_rtc_prefix_pmf.yaml
+@@ -0,0 +1,14 @@
++# Paired with the current seam run: only change prefix-length distribution.
++defaults:
++  - train_wuji_rtc_seam
++  - _self_
++
++training:
++  output_path: /gaozt-test1/fyhong/OpenWAM/outputs/wuji_rtc_prefix_pmf
++  rtc_seam_loss:
++    enabled: true
++  rtc_prefix_sampling:
++    enabled: true
++    # Indices d=0..12; d=1..7 split 10% equally. Sum=1.
++    # When enabled this replaces the entire old distribution, including p(d=0).
++    probabilities: [0.10, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.15, 0.15, 0.35, 0.10, 0.05]
+--- /dev/null
++++ b/scripts/train_wuji_rtc_prefix_pmf.sh
+@@ -0,0 +1,63 @@
++#!/usr/bin/env bash
++# Manual launch only; eight GPUs per group. No GPU processes are stopped here.
++set -euo pipefail
++cd "$(dirname "$0")/.."
++group="${1:?Usage: bash scripts/train_wuji_rtc_prefix_pmf.sh baseline|seam [--print-config]}"
++shift
++mode="${1:-train}"
++if [[ "$mode" != train && "$mode" != --print-config ]] || (( $# > 1 )); then
++    echo 'Only --print-config is accepted after the group.' >&2; exit 2
++fi
++case "$group" in
++    baseline) enabled=false; port=29671 ;;
++    seam) enabled=true; port=29672 ;;
++    *) echo 'Group must be baseline or seam.' >&2; exit 2 ;;
++esac
++python_bin="${RTC_PYTHON:-/gaozt-test1/fyhong/envs/statewam/bin/python}"
++checkpoint="${RTC_INIT_CKPT:-$PWD/outputs/grasp_anything_base/2026-09-16_21-50-22/checkpoint_step_18000.safetensors}"
++[[ "$checkpoint" == /* && "$checkpoint" == *.safetensors ]] || { echo "Initialization must be an absolute safetensors path." >&2; exit 2; }
++init_name="$(basename "$checkpoint" .safetensors)"
++for file in "$checkpoint" "$(dirname "$checkpoint")/config.yaml" "$(dirname "$checkpoint")/normalization_stats.npy"; do
++    [[ -f "$file" ]] || { echo "Missing initialization file: $file" >&2; exit 2; }
++done
++export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
++IFS=',' read -r -a gpu_ids <<< "$CUDA_VISIBLE_DEVICES"
++if (( ${#gpu_ids[@]} != 8 )); then echo 'This experiment requires exactly eight visible GPUs.' >&2; exit 2; fi
++declare -A seen=()
++for gpu in "${gpu_ids[@]}"; do
++    [[ -n "$gpu" && -z "${seen[$gpu]:-}" ]] || { echo 'GPU IDs must be nonempty and distinct.' >&2; exit 2; }
++    seen[$gpu]=1
++done
++output="$PWD/outputs/wuji_rtc_prefix_pmf/$group"
++overrides=("training.finetune_ckpt_path=$checkpoint" "training.output_path=$output" "training.rtc_seam_loss.enabled=$enabled"
++    "project.wandb.run_name=wuji_rtc_prefix_pmf_${group}_${init_name}_8gpu_bs32_ga2")
++if [[ "$mode" == --print-config ]]; then
++    exec "$python_bin" scripts/train.py --config-name train_wuji_rtc_prefix_pmf --cfg job --resolve "${overrides[@]}"
++fi
++export NCCL_DEBUG=WARN TOKENIZERS_PARALLELISM=false
++export WANDB_MODE="${WANDB_MODE:-online}"
++export NETRC="${NETRC:-$PWD/wandb/.netrc}"
++export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-$PWD/wandb/config}"
++# Share the existing history lock to prevent accidental overlap of these 8-GPU jobs.
++mkdir -p "$PWD/outputs/wuji_rtc_history"
++exec 9>"$PWD/outputs/wuji_rtc_history/manual_training.lock"
++flock -n 9 || { echo 'Another history/seam eight-GPU experiment is running.' >&2; exit 2; }
++mkdir -p "$output/launches"
++stamp="$(date +%Y%m%d_%H%M%S)_$$"
++sha256sum "$checkpoint" "$(dirname "$checkpoint")/config.yaml" \
++    "$(dirname "$checkpoint")/normalization_stats.npy" > "$output/launches/${stamp}_initialization.sha256"
++git rev-parse HEAD > "$output/launches/${stamp}_git_head.txt"
++git diff --binary HEAD > "$output/launches/${stamp}_git_diff.patch"
++git rev-parse refs/heads/codex/rtc-prefix-pmf-applied-20261012 > "$output/launches/${stamp}_prepared_commit.txt"
++sources=(openwam/model/architectures/utils/{training_rtc,rtc_state_history,rtc_seam_loss,rtc_prefix_sampling}.py
++    openwam/model/architectures/base.py openwam/train/openwam_trainer.py
++    openwam/dataloader/wuji_real_task.py configs/train_wuji_rtc_{ab,history,seam,prefix_pmf}.yaml
++    scripts/train_wuji_rtc_prefix_pmf.sh)
++sha256sum "${sources[@]}" > "$output/launches/${stamp}_sources.sha256"
++tar -czf "$output/launches/${stamp}_sources.tar.gz" "${sources[@]}"
++"$python_bin" scripts/train.py --config-name train_wuji_rtc_prefix_pmf --cfg job --resolve "${overrides[@]}" > "$output/launches/${stamp}_config.yaml"
++printf 'Group %s; GPUs %s; effective batch 512; prefix PMF enabled; seam weighting %s\n' "$group" "$CUDA_VISIBLE_DEVICES" "$enabled"
++"$python_bin" -m torch.distributed.run --nnodes=1 --nproc_per_node=8 --node_rank=0 \
++    --master_addr=127.0.0.1 --master_port="${MASTER_PORT:-$port}" \
++    scripts/train.py --config-name train_wuji_rtc_prefix_pmf "${overrides[@]}" \
++    2>&1 | tee "$output/launches/${stamp}.log"
+--- /dev/null
++++ b/tests/test_rtc_prefix_sampling.py
+@@ -0,0 +1,126 @@
++"""Optional prefix PMF: original RNG path, distribution, padding, resume and wiring."""
++import pytest
++import torch
++
++from openwam.model.architectures.utils.rtc_prefix_sampling import (
++    RTCPrefixSamplingConfig, configure_rtc_prefix_sampling, sample_prefix_lengths,
++)
++from openwam.model.architectures.utils.training_rtc import (
++    TrainingRTCConfig, make_training_prefix, configure_training_rtc,
++)
++from openwam.model.architectures.utils.rtc_seam_loss import configure_rtc_seam_loss
++from tests.test_training_rtc import model_and_data
++
++
++@pytest.mark.parametrize('cfg', [None, {}, {'enabled': False, 'probabilities': [0., 0., 1.]}])
++def test_disabled_preserves_full_loss_and_rng(cfg):
++    model, data = model_and_data()
++    configure_training_rtc(model, {'enabled': True, 'max_prefix_steps': 2})
++    configure_rtc_seam_loss(model, {'enabled': True, 'steps': 1})
++    torch.manual_seed(109)
++    before = model.compute_loss(**data)
++    rng = torch.get_rng_state()
++    configure_rtc_prefix_sampling(model, cfg)
++    torch.manual_seed(109)
++    after = model.compute_loss(**data)
++    assert torch.equal(torch.get_rng_state(), rng)
++    assert all(torch.equal(before[k], after[k]) for k in before)
++
++
++def test_empirical_pmf_and_rng_restore():
++    probs = [.1] + [.1 / 7] * 7 + [.15, .15, .35, .1, .05]
++    cfg = RTCPrefixSamplingConfig.from_config({'enabled': True, 'probabilities': probs})
++    torch.manual_seed(113)
++    state = torch.get_rng_state()
++    sampled = sample_prefix_lengths(200000, 12, cfg)
++    torch.set_rng_state(state)
++    assert torch.equal(sampled, sample_prefix_lengths(200000, 12, cfg))
++    actual = torch.bincount(sampled, minlength=13).double() / len(sampled)
++    torch.testing.assert_close(actual, torch.tensor(probs, dtype=torch.float64), atol=.004, rtol=0)
++
++
++@pytest.mark.parametrize('dim_mask', [False, True])
++def test_valid_window_limits_and_clean_prefix(dim_mask):
++    actions = torch.randn(4, 6, 5)
++    noisy = torch.randn_like(actions)
++    pad = torch.zeros_like(actions, dtype=torch.bool) if dim_mask else torch.zeros(4, 6, dtype=torch.bool)
++    pad[1, 3:] = True
++    pad[2, 1:] = True
++    pad[3] = True
++    if dim_mask:
++        pad[..., -1] = True
++    original = pad.clone()
++    cfg = RTCPrefixSamplingConfig(True, (0, 0, 0, 0, 1))
++    # PMF replaces p0, even when the legacy zero-prefix probability is 1.
++    x, t, mask = make_training_prefix(actions, noisy, torch.ones(4), pad,
++        TrainingRTCConfig(True, 4, 1), sampling_config=cfg)
++    added = mask & ~pad
++    if dim_mask:
++        added = added.any(-1)
++    assert added.sum(-1).tolist() == [4, 2, 0, 0]
++    assert torch.equal(x[0, :4], actions[0, :4])
++    assert torch.equal(x[0, 4:], noisy[0, 4:])
++    assert t[0, :4].eq(0).all() and t[0, 4:].eq(1).all()
++    assert torch.equal(original, pad)
++
++
++def test_explicit_lengths_bypass_pmf_and_zero_mass_keeps_scalar_path():
++    actions, noisy = torch.randn(2, 6, 4), torch.randn(2, 6, 4)
++    t = torch.ones(2)
++    rtc = TrainingRTCConfig(True, 4)
++    pmf = RTCPrefixSamplingConfig(True, (0, 0, 0, 0, 1))
++    rng = torch.get_rng_state()
++    a = make_training_prefix(actions, noisy, t, None, rtc, torch.tensor([1, 2]), sampling_config=pmf)
++    b = make_training_prefix(actions, noisy, t, None, rtc, torch.tensor([1, 2]))
++    assert all(torch.equal(x, y) for x, y in zip(a, b))
++    assert torch.equal(rng, torch.get_rng_state())
++    x, times, pad = make_training_prefix(actions, noisy, t, None, rtc,
++        sampling_config=RTCPrefixSamplingConfig(True, (1, 0, 0, 0, 0)))
++    assert x is noisy and times is t and pad is None
++    assert torch.equal(rng, torch.get_rng_state())
++
++
++@pytest.mark.parametrize('cfg', [
++    {'enabled': True}, {'enabled': 1}, {'probabilities': []}, {'probabilities': [.1, .2]},
++    {'probabilities': [-.1, 1.1]}, {'probabilities': [True, 0.]},
++    {'probabilities': [float('nan'), 1.]}, {'probabilities': [float('inf')]},
++])
++def test_bad_config(cfg):
++    with pytest.raises(ValueError):
++        RTCPrefixSamplingConfig.from_config(cfg)
++
++
++def test_resume_contract_and_architecture_guard():
++    model, _ = model_and_data()
++    configure_training_rtc(model, {'enabled': True, 'max_prefix_steps': 2})
++    cfg = {'enabled': True, 'probabilities': [.1, .2, .7]}
++    keys = tuple(model.state_dict())
++    configure_rtc_prefix_sampling(model, cfg)
++    assert keys == tuple(model.state_dict())
++    configure_rtc_prefix_sampling(model, cfg, saved_cfg=cfg, resume=True)
++    for saved in [None, {'enabled': True, 'probabilities': [.1, .3, .6]}]:
++        with pytest.raises(ValueError, match='Resume'):
++            configure_rtc_prefix_sampling(model, cfg, saved_cfg=saved, resume=True)
++    with pytest.raises(ValueError, match='exactly'):
++        configure_rtc_prefix_sampling(model, {'enabled': True, 'probabilities': [0, 1]})
++    configure_training_rtc(model, {'enabled': False})
++    with pytest.raises(ValueError, match='requires TrainingRTC'):
++        configure_rtc_prefix_sampling(model, cfg)
++
++
++def test_actual_compute_loss_uses_sampled_prefix_and_existing_seam_weights():
++    model, data = model_and_data()
++    configure_training_rtc(model, {'enabled': True, 'max_prefix_steps': 2})
++    configure_rtc_prefix_sampling(model, {'enabled': True, 'probabilities': [0., 1., 0.]})
++    configure_rtc_seam_loss(model, {'enabled': True, 'steps': 1})
++    captured = {}
++    original = model._compute_action_loss
++    def capture(pred, target, timestep_ids, scheduler, inputs, device):
++        captured.update(inputs)
++        return original(pred, target, timestep_ids, scheduler, inputs, device)
++    model._compute_action_loss = capture
++    loss = model.compute_loss(**data)['loss']
++    assert torch.equal(captured['rtc_seam_weights'], torch.tensor([[1., 2., 1.], [1., 2., 1.]]))
++    loss.backward()
++    grads = [p.grad for p in model.action_backbone.parameters() if p.grad is not None]
++    assert grads and all(g.isfinite().all() for g in grads) and any(g.abs().sum() > 0 for g in grads)

@@ -22,6 +22,24 @@ def test_repr_contract_defaults():
     assert contract == {"representation": "joint"}
 
 
+def test_repr_contract_advertises_wuji_raw_layout():
+    cfg = OmegaConf.create(
+        {
+            "dataloader": {
+                "type": "wuji_real_task",
+                "action_mode": "eef",
+                "rot6d_convention": "column",
+            }
+        }
+    )
+    assert repr_contract_from_cfg(cfg) == {
+        "representation": "eef",
+        "raw_action_dim": 58,
+        "rot6d_convention": "column",
+        "action_layout": "left_eef9,left_hand20,right_eef9,right_hand20",
+    }
+
+
 def test_repr_contract_preserves_optional_legacy_markers():
     cfg = OmegaConf.create(
         {

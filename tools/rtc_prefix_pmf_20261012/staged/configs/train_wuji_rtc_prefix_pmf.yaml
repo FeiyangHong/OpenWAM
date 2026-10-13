@@ -1,0 +1,14 @@
+# Paired with the current seam run: only change prefix-length distribution.
+defaults:
+  - train_wuji_rtc_seam
+  - _self_
+
+training:
+  output_path: /gaozt-test1/fyhong/OpenWAM/outputs/wuji_rtc_prefix_pmf
+  rtc_seam_loss:
+    enabled: true
+  rtc_prefix_sampling:
+    enabled: true
+    # Indices d=0..12; d=1..7 split 10% equally. Sum=1.
+    # When enabled this replaces the entire old distribution, including p(d=0).
+    probabilities: [0.10, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.014285714285714286, 0.15, 0.15, 0.35, 0.10, 0.05]

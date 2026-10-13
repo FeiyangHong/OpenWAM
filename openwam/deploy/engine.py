@@ -18,6 +18,7 @@ from typing import Any, Optional
 import torch
 
 from openwam.deploy.denoise_schedule import make_schedule, normalize_denoise_config
+from openwam.deploy.video_saver import DecodedVideoSaver
 from openwam.model.architectures.base import BaseWAMArchitecture
 
 logger = logging.getLogger(__name__)
@@ -107,11 +108,31 @@ class JointInferenceEngine(BaseInferenceEngine):
         super().__init__(cfg, architecture=architecture, action_backbone=action_backbone)
         normalize_denoise_config(getattr(cfg, "inference", None))
 
+        from openwam.deploy.executors.async_executor import _select
+        from openwam.model.architectures.utils.training_rtc import require_rtc_architecture
+
+        self._rtc_enabled = bool(_select(cfg, "inference.rtc.enabled", False))
+        if self._rtc_enabled:
+            require_rtc_architecture(architecture)
+            if not getattr(getattr(architecture, "training_rtc", None), "enabled", False):
+                raise ValueError("TrainingRTC deployment requires an RTC-trained checkpoint")
+            if _select(cfg, "optimization.dit_cache.enabled", False):
+                raise ValueError("TrainingRTC requires optimization.dit_cache.enabled=false")
+
         self._architecture_generate_accepts_extra_kwargs: Optional[bool] = None
         self._architecture_generate_kwarg_names: Optional[set[str]] = None
         self._architecture_generate_warned_dropped_kwargs: set[tuple[str, tuple[str, ...]]] = set()
         self._init_optimizations()
         self._init_cfg()
+        self._video_saver = None
+        optimization = getattr(cfg, "optimization", None)
+        if optimization is not None and bool(getattr(optimization, "save_video", False)):
+            self._video_saver = DecodedVideoSaver(
+                getattr(optimization, "video_output_dir", "debug_output/predicted_videos"),
+                fps=float(getattr(optimization, "video_fps", 7.5)),
+                queue_size=int(getattr(optimization, "video_queue_size", 8)),
+            )
+            logger.info("Decoded video saving enabled: %s", self._video_saver.root)
 
     def _filter_architecture_generate_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Drop deploy-only kwargs the architecture's generate() cannot consume."""
@@ -262,6 +283,8 @@ class JointInferenceEngine(BaseInferenceEngine):
                 - height (int, optional): defaults from cfg
                 - width (int, optional): defaults from cfg
                 - seed (int, optional): random seed, default 42
+                - action_seed (int, optional): independent action-noise seed;
+                  defaults to the same seed as the world stream
                 - tiled (bool, optional): tiled VAE decoding, default True
                 - input_video_latents (Tensor, optional): precomputed video latents
                 - denoise_mode (str, optional): "sync" or "async"; "sync" ignores
@@ -343,6 +366,7 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "height": conditions.get("height", getattr(inf_cfg, "height", 384)),
                 "width": conditions.get("width", getattr(inf_cfg, "width", 320)),
                 "seed": conditions.get("seed", 42),
+                "action_seed": conditions.get("action_seed", None),
                 "tiled": conditions.get("tiled", True),
                 "input_video_latents": conditions.get("input_video_latents", None),
                 "num_inference_steps": denoise_steps,
@@ -357,10 +381,34 @@ class JointInferenceEngine(BaseInferenceEngine):
                 "cfg_merge": self._cfg_merge,
             }
         )
+        if conditions.get("rtc_prefix") is not None:
+            if not getattr(self, "_rtc_enabled", False):
+                raise ValueError("rtc_prefix requires inference.rtc.enabled=true")
+            prefix = conditions["rtc_prefix"]
+            normalizer = getattr(self.architecture, "normalizer", None)
+            if normalizer is not None:
+                normalize = getattr(normalizer, "normalize_action", normalizer.normalize)
+                prefix = normalize(prefix)
+            generate_kwargs["rtc_prefix"] = prefix
         result = self.architecture.generate(**generate_kwargs)
+
+        if self._video_saver is not None and result.get("video") is not None:
+            self._video_saver.submit(
+                result["video"],
+                session_id=conditions.get("video_save_session_id"),
+                episode_id=conditions.get("video_save_episode_id"),
+            )
 
         # Attach optimization stats if profiling
         if self._profile and self._dit_cache is not None:
             result["dit_cache_stats"] = self._dit_cache.stats
 
         return result
+
+    def reset_video_saving(self, session_id: str) -> None:
+        if self._video_saver is not None:
+            self._video_saver.reset(session_id)
+
+    def shutdown(self) -> None:
+        if self._video_saver is not None:
+            self._video_saver.close()

@@ -141,6 +141,43 @@ class OpenWAMTrainer:
             resolved_arch.canonical.variant,
         )
 
+        from openwam.model.architectures.utils.training_rtc import configure_training_rtc
+
+        configure_training_rtc(
+            self.architecture, t.get("rtc"),
+            saved_cfg=ckpt_cfg.training.get("rtc") if resume_path else None,
+            resume=bool(resume_path),
+        )
+        from openwam.model.architectures.utils.rtc_prefix_sampling import configure_rtc_prefix_sampling
+
+        configure_rtc_prefix_sampling(
+            self.architecture, t.get("rtc_prefix_sampling"),
+            saved_cfg=ckpt_cfg.training.get("rtc_prefix_sampling") if resume_path else None,
+            resume=bool(resume_path),
+        )
+        from openwam.model.architectures.utils.rtc_seam_loss import configure_rtc_seam_loss
+
+        configure_rtc_seam_loss(
+            self.architecture, t.get("rtc_seam_loss"),
+            saved_cfg=ckpt_cfg.training.get("rtc_seam_loss") if resume_path else None,
+            resume=bool(resume_path),
+        )
+        from openwam.model.architectures.utils.rtc_state_augmentation import configure_rtc_state_augmentation
+
+        configure_rtc_state_augmentation(
+            self.architecture, t.get("rtc_state_augmentation"), dataset=self.dataset,
+            saved_cfg=ckpt_cfg.training.get("rtc_state_augmentation") if resume_path else None,
+            resume=bool(resume_path),
+        )
+
+        from openwam.model.architectures.utils.rtc_state_history import configure_rtc_state_history
+
+        configure_rtc_state_history(
+            self.architecture, t.get("rtc_state_history"), dataset=self.dataset,
+            saved_cfg=ckpt_cfg.training.get("rtc_state_history") if resume_path else None,
+            resume=bool(resume_path),
+        )
+
         # Device placement: skip .to(device) when initialize_model_on_cpu and a real
         # training Accelerator is present — DeepSpeed's prepare() then handles the move.
         _init_on_cpu = bool(t.get("initialize_model_on_cpu", False))
@@ -340,6 +377,12 @@ class OpenWAMTrainer:
                 global_step += 1
 
                 metrics = reduce_step_metrics(self.accelerator, losses, grad_norm)
+                history_stats = getattr(self.architecture, "rtc_state_history_metrics", None)
+                if history_stats:
+                    names = sorted(history_stats)
+                    values = torch.tensor([history_stats[k] for k in names], device=loss.device)
+                    values = self.accelerator.reduce(values, reduction="mean")
+                    metrics.update({"rtc_history/"+k: v for k, v in zip(names, values.tolist())})
 
                 current_lr = optimizer.param_groups[0]["lr"]
                 _now = _time.monotonic()
@@ -619,6 +662,7 @@ class OpenWAMTrainer:
             }
             for name, key in labels:
                 log_dict[f"train/loss_{name}"] = metrics[key]
+            log_dict.update({k: v for k, v in metrics.items() if k.startswith("rtc_history/")})
             wandb_run.log(log_dict, step=global_step)
 
         if not debug:

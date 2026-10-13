@@ -4,6 +4,17 @@ defaults:
   - _self_
 
 training:
+  # TrainingRTC is opt-in; missing/false preserves ordinary training.
+  rtc:
+    enabled: false
+    max_prefix_steps: 12
+    zero_prefix_probability: 0.25
+  # Separate from rtc so old deployment readers can still parse training.rtc.
+  rtc_state_augmentation:
+    enabled: false
+    probability: 0.10
+    max_translation_m: 0.005
+
   # --- Debug ---
   debug: false                    # Debug mode: max_steps=20, save@10, constant LR
 

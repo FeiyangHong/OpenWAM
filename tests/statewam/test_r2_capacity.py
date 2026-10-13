@@ -5,6 +5,8 @@ import torch
 
 from openwam.model.architectures.statewam.state_expert import InteractionStateExpert
 from tests.statewam.test_statewam import inputs, tiny_architecture
+from openwam.model.architectures.dual_system.joint_self_attn import DualSystemSelfAttnArchitecture
+from scripts.statewam.r2.matrix import apply_parameter_policy
 
 
 def controlled_model(source):
@@ -92,7 +94,74 @@ def test_pooling_masks_nan_and_has_no_trainable_parameters():
     assert torch.count_nonzero(video.grad[~valid]) == 0
 
 
+@pytest.mark.parametrize("shape,target", [((2, 7, 12), (3, 5)), ((1, 120, 3072), (32, 1024)), ((2, 3, 4), (5, 7))])
+def test_deterministic_pooling_matches_adaptive_bins_and_gradients(shape, target):
+    video = torch.randn(*shape, dtype=torch.float64, requires_grad=True)
+    valid = torch.rand(shape[:2]) > 0.3
+    masked = video.masked_fill(~valid[..., None], 0)
+    reference = torch.nn.functional.adaptive_avg_pool2d(masked.unsqueeze(1), target).squeeze(1)
+    weights = torch.nn.functional.adaptive_avg_pool1d(valid.double().unsqueeze(1), target[0]).transpose(1, 2)
+    reference = reference / weights.clamp_min(torch.finfo(torch.float64).tiny)
+    actual, actual_valid = InteractionStateExpert.current_capacity_source(video, valid, tokens=target[0], dim=target[1])
+    torch.testing.assert_close(reference, actual, rtol=1e-12, atol=1e-12)
+    assert torch.equal(actual_valid, weights.squeeze(-1) > 0)
+    upstream = torch.randn_like(actual)
+    a = torch.autograd.grad(reference, video, upstream)[0]
+    b = torch.autograd.grad(actual, video, upstream)[0]
+    torch.testing.assert_close(a, b, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA deterministic pooling requires a GPU")
+def test_cuda_pooling_backward_is_strictly_deterministic(monkeypatch):
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    enabled, warn_only = torch.are_deterministic_algorithms_enabled(), torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        torch.use_deterministic_algorithms(True)
+        video = torch.randn(2, 120, 3072, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+        valid = torch.rand(2, 120, device="cuda") > 0.3
+        outputs, gradients = [], []
+        for _ in range(2):
+            output, _ = InteractionStateExpert.current_capacity_source(video, valid, tokens=32, dim=1024)
+            outputs.append(output)
+            gradients.append(torch.autograd.grad(output.float().square().sum(), video)[0])
+        assert torch.equal(outputs[0], outputs[1]) and torch.equal(gradients[0], gradients[1])
+        assert gradients[0].isfinite().all() and gradients[0].abs().sum() > 0
+        assert torch.count_nonzero(gradients[0][~valid]) == 0
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+
+
 def test_capacity_control_validation():
     with pytest.raises(ValueError, match="current-only control"):
         InteractionStateExpert(video_dim=32, action_dim=32, attention_dim=32, num_layers=30,
                                cfg={"source": "future_action", "capacity_control": "current_resample"})
+
+
+@pytest.mark.parametrize("group", ["E0", "E1", "E2", "E3"])
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_matrix_world_freeze_preserves_input_gradients(group, checkpointed):
+    torch.manual_seed(17)
+    if group == "E0":
+        model = tiny_architecture(DualSystemSelfAttnArchitecture)
+    elif group == "E3":
+        model = tiny_architecture()
+    else:
+        model = controlled_model("current" if group == "E1" else "future")
+    counts = apply_parameter_policy(model)
+    assert counts["trainable"] < counts["total"]
+    data = inputs()
+    data["latents"].requires_grad_(True)
+    outputs = model(**data, use_gradient_checkpointing=checkpointed)
+    sum(value.square().mean() for value in outputs).backward()
+    gradient = data["latents"].grad
+    assert gradient is not None and gradient.isfinite().all() and gradient.abs().sum() > 0
+    assert all(not p.requires_grad and p.grad is None for p in model.video_backbone.parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.action_backbone.parameters())
+
+
+@pytest.mark.parametrize("path", ["video_backbone", "video_backbone.dit"])
+def test_matrix_rejects_world_no_grad_wrapper(path):
+    model = tiny_architecture()
+    model.freeze_modules([path])
+    with pytest.raises(ValueError, match="no_grad wrappers"):
+        apply_parameter_policy(model)
